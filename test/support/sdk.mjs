@@ -259,5 +259,16 @@ export async function send(a, b, text) {
 export const hasPeer = (x, text) =>
   x.session.agent.state.messages.some((m) => m.role === "custom" && m.details?.text === text);
 export async function command(x, text) {
-  await x.session.prompt(text, { source: "interactive" });
+  // Pi 1.x defers prompts submitted during agent_settled and returns from
+  // prompt() immediately. isIdle is already true at that boundary. Wait for
+  // this request's preflight acknowledgement, then its actual settlement.
+  let prepared = false;
+  await x.session.prompt(text, {
+    source: "interactive",
+    preflightResult: () => {
+      prepared = true;
+    },
+  });
+  await until(() => prepared, "command preflight acknowledged");
+  await x.session.waitForIdle();
 }

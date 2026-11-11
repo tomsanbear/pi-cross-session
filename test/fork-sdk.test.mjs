@@ -1,7 +1,50 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
-import { make, command, tool, until } from "./support/sdk.mjs";
+import { make, command, tool, until, hold, sleep, sdkVersion } from "./support/sdk.mjs";
+
+test(
+  "SDK 1.x: command fixture waits for a prompt deferred during settled handlers",
+  { skip: !sdkVersion.startsWith("1.") },
+  async () => {
+    const gate = hold();
+    let entered = false,
+      completed = false,
+      first = true;
+    const host = await make("deferred-prompt", {
+      extra: (pi) =>
+        pi.on("agent_settled", async () => {
+          if (!first) return;
+          first = false;
+          entered = true;
+          await gate.promise;
+        }),
+    });
+    let initial, followup;
+    try {
+      initial = command(host, "first turn");
+      await until(
+        () => entered && host.session.isIdle,
+        "settled handler held while SDK reports idle",
+      );
+      followup = command(host, "deferred genuine user turn").then(() => {
+        completed = true;
+      });
+      await sleep(30);
+      assert.equal(completed, false, "command must not return before its deferred prompt starts");
+      assert.equal(host.calls.length, 1);
+      gate.release();
+      await Promise.all([initial, followup]);
+      assert.equal(host.calls.length, 2);
+      assert.equal(host.session.isIdle, true);
+    } finally {
+      gate.release();
+      await initial;
+      await followup;
+      await host.close();
+    }
+  },
+);
 
 // Real SDK lifecycle and IPC, inert pi-subagents-shaped tool. This tests the
 // public adapter contract, not a real worker/model or pi-subagents' scheduler.

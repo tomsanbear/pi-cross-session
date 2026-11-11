@@ -1,0 +1,48 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }} / Pi ${{ matrix.pi }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 22.19.0
+            pi: 0.84.4
+          - os: ubuntu-latest
+            node: 24
+            pi: 1.5.2
+          - os: macos-latest
+            node: 24
+            pi: 0.84.4
+          - os: macos-latest
+            node: 24
+            pi: 1.5.2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Select compatibility SDK without modifying the lockfile
+        if: matrix.pi != '0.84.4'
+        run: npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@${{ matrix.pi }} @earendil-works/pi-tui@${{ matrix.pi }}
+      - run: ./test/run-clean.sh run format:check
+      - run: ./test/run-clean.sh run typecheck
+      - run: ./test/run-clean.sh test
+      - run: ./test/run-clean.sh run smoke
+      - name: Ensure checks did not modify tracked files
+        run: git diff --exit-code

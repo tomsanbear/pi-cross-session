@@ -99,6 +99,20 @@ test('review ordinary send deadline includes HIT delayed exchange lstat; late re
   }); } finally { gate.release(); statHook = async () => {}; await b.close(); await a.close(); }
 });
 
+test('outgoing tool abort after transmission returns receipt_unknown, never retries', async () => {
+  const a = await component('cancel-wire-a'), b = await component('cancel-wire-b');
+  const controller = new AbortController();
+  try {
+    await fakePeer(a, b, () => controller.abort(), async counts => {
+      await assert.rejects(a.ext.tools.get('send_pi_message').definition.execute(randomUUID(), {
+        target: b.peer.instanceId, message: 'cancel receipt wait',
+      }, controller.signal, undefined, a.ctx), error => error.code === 'cancelled' && error.state === 'receipt_unknown');
+      await sleep(30);
+      assert.equal(counts().sends, 1);
+    });
+  } finally { await b.close(); await a.close(); }
+});
+
 async function pipeline(a, b, bytes, split, warmup = 0) {
   const s = net.createConnection({ path: b.peer.socketPath }), replies = []; let buffer = '';
   s.on('error', () => {}); s.on('data', data => { buffer += data; let n; while ((n = buffer.indexOf('\n')) >= 0) { replies.push(JSON.parse(buffer.slice(0, n))); buffer = buffer.slice(n + 1); } });

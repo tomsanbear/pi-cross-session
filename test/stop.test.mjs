@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { make, send, hold, until, sleep, hasPeer, command } from './support/sdk.mjs';
-for (const scenario of ['normal-release', 'abort-release', 'abort-then-user']) test(`real SDK 0.84.4 + Unix IPC: ${scenario}`, { timeout: 20000 }, async () => {
+import { make, send, hold, until, sleep, hasPeer, command, sdkVersion } from './support/sdk.mjs';
+for (const scenario of ['normal-release', 'abort-release', 'abort-then-user']) test(`real SDK ${sdkVersion} + Unix IPC: ${scenario}`, { timeout: 20000 }, async () => {
   const a = await make('A-' + scenario), b = await make('B-' + scenario);
   const gate = hold(); b.setGate(gate);
   let prompt;

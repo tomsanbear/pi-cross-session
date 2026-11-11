@@ -6,22 +6,26 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { promisify, TextDecoder } from "node:util";
+import { promisify } from "node:util";
 import { CAPABILITY, RPC_SEND, RPC_INFO, RECEIVED, bridgeEnvelope, validId, validInstance, type SendRequest } from "../lib/contract";
 
 import { MESH_CONTINUATION, MeshContinuations } from "../lib/mesh-continuation";
 import { GOAL_ENTRY, PeerGoals } from "../lib/peer-goal";
 import { socketPathFor as ipcSocketPathFor } from "../lib/ipc-path";
+import { subagentCreatesTask, subagentReadOnly } from "../lib/subagents";
+import {
+  WIRE_VERSION, MAX_FRAME_BYTES, MAX_MESSAGE_CHARS, DeliveryError,
+  encodeFrame, frameReader, isHello, isMessage, isResponse,
+  type HelloFrame, type MessageFrame, type StatusFrame, type ResponseFrame,
+} from "../lib/protocol";
 
 const REGISTRATION_VERSION = 2;
-const WIRE_VERSION = 1;
 const GOAL_CAPABILITY = "goal-scoped-peer-v1";
-const MAX_FRAME_BYTES = 1_048_576;
-const MAX_MESSAGE_CHARS = 1_000_000;
 const MAX_REGISTRATION_BYTES = 64 * 1024;
 const MAX_PENDING = 50;
 const TOTAL_BUDGET = 256;
-const QUEUE_TTL_MS = 30_000;
+const MESSAGE_MAX_AGE_MS = 30_000;
+const DEFAULT_QUEUE_TTL_SECONDS = 600;
 const MAX_TRACKED_SENDERS = 256;
 const MAX_SEEN_MESSAGES = 512;
 const RATE_CAPACITY = 30;
@@ -61,42 +65,6 @@ type Peer = {
 type GitContext = { worktree: string; branch: string | null; head: string };
 type PublicPeer = Omit<Peer, "token"> & { ref: string; git?: GitContext | null };
 
-type HelloFrame = {
-  v: 1;
-  type: "hello";
-  requestId: string;
-  token: string;
-  target: { id: string; instanceId: string };
-  capabilities?: string[];
-  from?: { id: string; instanceId: string; token: string };
-};
-
-type MessageFrame = {
-  v: 1;
-  type: "message";
-  requestId: string;
-  messageId: string;
-  text: string;
-  summary: string;
-  sentAt: number;
-  goalId?: string;
-};
-
-type ResponseFrame = {
-  v: 1;
-  type: "response";
-  requestId: string;
-  ok: boolean;
-  status: string;
-  error?: string;
-  capabilities?: string[];
-  code?: string;
-  state?: string;
-  retryable?: boolean;
-  next?: string;
-  peer?: { id: string; instanceId: string; pid: number };
-};
-
 type IncomingDetails = {
   from: PublicPeer;
   text: string;
@@ -114,23 +82,6 @@ type SenderState = {
 type Admission =
   | { admitted: false; reason: "duplicate" | "rate_limited" }
   | { admitted: true; commit: () => void; rollback: () => void };
-
-class DeliveryError extends Error {
-  readonly state: string;
-  readonly retryable: boolean;
-  readonly next: string;
-
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(`${code}: ${message}`);
-    this.state = ["timeout", "connection_closed", "cancelled", "transport_error", "invalid_response", "invalid_receipt"].includes(code) ? "receipt_unknown" : "refused";
-    this.retryable = ["busy", "queue_full", "rate_limited"].includes(code);
-    this.next = this.state === "receipt_unknown" ? "Query message status on the same incarnation; never auto-retry" : this.retryable ? "Wait for a safe idle recipient, then explicitly retry" : "Inspect status/identity and policy; upgrade peers if unsupported";
-    this.name = "DeliveryError";
-  }
-}
 
 function socketPathFor(instanceId: string) {
   return ipcSocketPathFor(process.platform, runtimeDir, runtimeNamespace, instanceId);
@@ -196,98 +147,6 @@ function displayPeer(peer: Peer | PublicPeer) {
 function equalSecret(left: unknown, right: string) {
   if (typeof left !== "string" || !/^[0-9a-f]{64}$/.test(left) || !/^[0-9a-f]{64}$/.test(right)) return false;
   return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
-}
-
-function encodeFrame(frame: object) {
-  const line = `${JSON.stringify(frame)}\n`;
-  if (Buffer.byteLength(line) > MAX_FRAME_BYTES) {
-    throw new DeliveryError("message_too_large", `Serialized cross-session message exceeds ${MAX_FRAME_BYTES.toLocaleString("en-US")} bytes`);
-  }
-  return line;
-}
-
-// Shared wire reader: limit RAW bytes per frame (including LF/BOM), not decoded
-// text or a whole coalesced chunk. Deliver preceding frames before a later fault.
-function frameReader(onLine: (line: string) => boolean, onError: (code: string) => void) {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let text = "", bytes = 0, stopped = false;
-  return (chunk: Buffer) => {
-    for (let offset = 0; offset < chunk.length && !stopped;) {
-      const newline = chunk.indexOf(10, offset);
-      const end = newline < 0 ? chunk.length : newline + 1;
-      const part = chunk.subarray(offset, end);
-      bytes += part.length;
-      if (bytes > MAX_FRAME_BYTES) { stopped = true; onError("message_too_large"); return; }
-      try { text += decoder.decode(part, { stream: true }); }
-      catch { stopped = true; onError("invalid_frame"); return; }
-      offset = end;
-      if (newline >= 0) {
-        const line = text.slice(0, -1); text = ""; bytes = 0;
-        stopped = !onLine(line);
-      }
-    }
-  };
-}
-
-function validCapabilities(value: unknown) {
-  return value === undefined || Array.isArray(value) && value.length <= 8 && value.every(item => typeof item === "string" && item.length <= 64);
-}
-
-function isResponse(value: unknown): value is ResponseFrame {
-  if (!value || typeof value !== "object") return false;
-  const frame = value as Partial<ResponseFrame>;
-  return frame.v === WIRE_VERSION && frame.type === "response" && validId(frame.requestId) && typeof frame.ok === "boolean" && typeof frame.status === "string" && frame.status.length <= 64 && validCapabilities(frame.capabilities) &&
-    [frame.code, frame.state].every(value => value === undefined || typeof value === "string" && value.length <= 64) &&
-    (frame.next === undefined || typeof frame.next === "string" && frame.next.length <= 2048) &&
-    (frame.error === undefined || typeof frame.error === "string" && frame.error.length <= 4096) &&
-    (frame.retryable === undefined || typeof frame.retryable === "boolean");
-}
-
-function isHello(value: unknown): value is HelloFrame {
-  if (!value || typeof value !== "object") return false;
-  const frame = value as Partial<HelloFrame>;
-  return (
-    frame.v === WIRE_VERSION &&
-    frame.type === "hello" &&
-    validCapabilities(frame.capabilities) &&
-    typeof frame.requestId === "string" &&
-    validId(frame.requestId) &&
-    typeof frame.token === "string" &&
-    !!frame.target &&
-    typeof frame.target.id === "string" &&
-    frame.target.id.length > 0 && frame.target.id.length <= 512 &&
-    typeof frame.target.instanceId === "string" &&
-    /^[0-9a-f]{32}$/.test(frame.target.instanceId) &&
-    (
-      frame.from === undefined ||
-      (
-        !!frame.from && typeof frame.from.id === "string" &&
-        frame.from.id.length > 0 && frame.from.id.length <= 512 &&
-        typeof frame.from.instanceId === "string" &&
-        /^[0-9a-f]{32}$/.test(frame.from.instanceId) &&
-        typeof frame.from.token === "string"
-      )
-    )
-  );
-}
-
-function isMessage(value: unknown): value is MessageFrame {
-  if (!value || typeof value !== "object") return false;
-  const frame = value as Partial<MessageFrame>;
-  return (
-    frame.v === WIRE_VERSION &&
-    frame.type === "message" &&
-    typeof frame.requestId === "string" &&
-    validId(frame.requestId) &&
-    typeof frame.messageId === "string" &&
-    validId(frame.messageId) &&
-    typeof frame.text === "string" && frame.text.isWellFormed() && frame.text.length <= MAX_MESSAGE_CHARS &&
-    typeof frame.summary === "string" && frame.summary.isWellFormed() && !!frame.summary.trim() &&
-    codePointLength(frame.summary) <= 200 &&
-    typeof frame.sentAt === "number" &&
-    Number.isSafeInteger(frame.sentAt) &&
-    (frame.goalId === undefined || validId(frame.goalId))
-  );
 }
 
 async function ensurePrivateDir(path: string) {
@@ -372,7 +231,7 @@ async function vetSocket(peer: Peer) {
   if (uid !== undefined && info.uid !== uid) throw new DeliveryError("unsafe_endpoint", "Peer inbox socket is owned by another user");
 }
 
-async function exchange(peer: Peer, from: Peer | undefined, message: MessageFrame | undefined, timeoutMs: number, signal?: AbortSignal): Promise<ResponseFrame> {
+async function exchange(peer: Peer, from: Peer | undefined, message: MessageFrame | StatusFrame | undefined, timeoutMs: number, signal?: AbortSignal): Promise<ResponseFrame> {
   const expiresAt = performance.now() + timeoutMs;
   const helloRequestId = randomUUID();
   const hello: HelloFrame = {
@@ -418,13 +277,13 @@ async function exchange(peer: Peer, from: Peer | undefined, message: MessageFram
         }
         if (!message || !messageLine) return done(value);
         if (!value.capabilities?.includes(CAPABILITY)) return fail(new DeliveryError("unsupported", "Receiver lacks cancel-safe-queue-v1; upgrade receiver (no unsafe fallback)"));
-        if (message.goalId && !value.capabilities.includes(GOAL_CAPABILITY)) return fail(new DeliveryError("unsupported", "Receiver lacks goal-scoped-peer-v1; no unscoped fallback"));
+        if (message.type === "message" && message.goalId && !value.capabilities.includes(GOAL_CAPABILITY)) return fail(new DeliveryError("unsupported", "Receiver lacks goal-scoped-peer-v1; no unscoped fallback"));
         phase = "message";
         socket!.write(messageLine);
         return;
       }
       if (
-        !["submitted", "queued", "accepted"].includes(value.status) ||
+        (message?.type !== "status" && !["submitted", "queued", "accepted"].includes(value.status)) ||
         value.peer?.id !== peer.id ||
         value.peer.instanceId !== peer.instanceId
       ) {
@@ -462,6 +321,9 @@ async function exchange(peer: Peer, from: Peer | undefined, message: MessageFram
 }
 
 export default function (pi: ExtensionAPI) {
+  // pi-subagents sets this during child extension loading, including temporary
+  // same-PID foreground startup. Capture per instance; never reread on heartbeat.
+  const managedSubagent = process.env.PI_SUBAGENT_CHILD === "1";
   let current: Peer | undefined;
   let currentCtx: ExtensionContext | undefined;
   // Inbox cleanup cannot retract a submitted SDK turn. Observe authority until
@@ -518,10 +380,19 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerFlag("cross-session-rpc", { description: "Enable trusted Host-only EventBus RPC/handled bridge admission", type: "boolean", default: false });
   pi.registerFlag("cross-session-guard", {
-    description: "Block direct task-creation and platform tools (subagent, Agent, steer/send, user messaging, tool/config changes) in live peer-driven turns (default off; mesh and peer_goal fences always apply)",
+    description: "Block unscoped peer delegation/configuration tools (default true; false explicitly restores legacy behavior)",
     type: "boolean",
-    default: false,
+    default: true,
   });
+  pi.registerFlag("cross-session-auto-resume", {
+    description: "Reopen inbound peers after a clean genuine local-user turn; never replay dropped messages or restore grants",
+    type: "boolean", default: false,
+  });
+  pi.registerFlag("cross-session-queue-ttl-seconds", {
+    description: "Busy inbox retention, 30–3600 seconds (default 600); memory-only, dropped on cancellation",
+    type: "string", default: String(DEFAULT_QUEUE_TTL_SECONDS),
+  });
+  let queueTtlMs = DEFAULT_QUEUE_TTL_SECONDS * 1000;
   pi.registerFlag("cross-session-inbound", {
     description: "Accept or refuse messages from other Pi sessions",
     type: "string",
@@ -539,8 +410,19 @@ export default function (pi: ExtensionAPI) {
     const [entry] = pending.splice(i, 1); clearTimeout(entry.timer);
     status(key, reason);
   }
+  function updateInboxStatus() {
+    try {
+      currentCtx?.ui.setStatus("cross-session", stopped ? "peers paused · /cross-session-resume" :
+        budget <= 16 ? `peers budget ${budget} · /cross-session-budget` : undefined);
+    } catch { /* UI diagnostics must never alter authority or delivery. */ }
+  }
+  function reopenInbox() {
+    stopped = false;
+    updateInboxStatus();
+  }
   function latch() {
     stopped = true; turnCancelled = true; notificationTurn = false; revokeGoal();
+    updateInboxStatus();
     for (const entry of [...pending]) dropPending(entry.key, "dropped_cancelled");
   }
   function submit(details: IncomingDetails, key: string) {
@@ -586,6 +468,7 @@ export default function (pi: ExtensionAPI) {
     clearTimeout(flushTimer); flushTimer = undefined;
     clearTimeout(submissionTimer); submissionTimer = undefined;
     for (const entry of [...pending]) dropPending(entry.key, "dropped_shutdown");
+    try { currentCtx?.ui.setStatus("cross-session", undefined); } catch { /* best effort */ }
     for (const cancel of [...rpcCancels]) { try { cancel(); } catch { /* runtime may already be invalidated */ } }
     for (const off of rpcUnsubscribers) off(); rpcUnsubscribers = [];
     const peer = current;
@@ -707,7 +590,7 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  function response(socket: Socket, requestId: string, ok: boolean, status: string, error?: string) {
+  function response(socket: Socket, requestId: string, ok: boolean, status: string, error?: string, expiresAt?: number) {
     if (socket.destroyed) return;
     const frame: ResponseFrame = {
       v: WIRE_VERSION,
@@ -721,6 +604,7 @@ export default function (pi: ExtensionAPI) {
       retryable: !ok && ["busy", "queue_full", "rate_limited"].includes(status),
       next: ok ? "Query status on this incarnation; admission/submission is not processing or durable delivery" : new DeliveryError(status, error ?? status).next,
       ...(error && { error }),
+      ...(expiresAt !== undefined && { expiresAt }),
       ...(ok && current && { peer: { id: current.id, instanceId: current.instanceId, pid: current.pid } }),
     };
     socket.write(encodeFrame(frame));
@@ -793,7 +677,7 @@ export default function (pi: ExtensionAPI) {
       if (codePointLength(value.summary) > 200) return reject(value.requestId, "invalid_message", "Message summary exceeds 200 characters");
       if (inboundMode() === "refuse") return reject(value.requestId, "refused", "Recipient is not accepting cross-session messages");
       if (stopped) return reject(value.requestId, "stopped", "Observed cancellation; local user must run /cross-session-resume (dropped messages never replay)");
-      if (Date.now() - value.sentAt > QUEUE_TTL_MS || value.sentAt > Date.now() + 5_000) return reject(value.requestId, "expired", "Message timestamp is expired or in the future; inspect clocks, do not auto-retry");
+      if (Date.now() - value.sentAt > MESSAGE_MAX_AGE_MS || value.sentAt > Date.now() + 5_000) return reject(value.requestId, "expired", "Message timestamp is expired or in the future; inspect clocks, do not auto-retry");
       let bridge;
       try { bridge = bridgeEnvelope(value.text); } catch (error) { return reject(value.requestId, "invalid_bridge", String(error)); }
       if (bridge && value.goalId) return reject(value.requestId, "invalid_goal", "Goal-scoped messages cannot use bridge routing");
@@ -819,6 +703,7 @@ export default function (pi: ExtensionAPI) {
       };
       const key = `${sender.instanceId}:${value.messageId}`;
       admission.commit(); if (!scopedGoal) budget--;
+      updateInboxStatus();
       statuses.set(key, { messageId: value.messageId, source: sender.instanceId, state: "accepted", updatedAt: Date.now() });
       for (const [oldKey, row] of statuses) {
         if (statuses.size <= MAX_SEEN_MESSAGES) break;
@@ -847,12 +732,13 @@ export default function (pi: ExtensionAPI) {
         if (phase !== "busy" || activeSignal !== admittedSignal || !admittedSignal || admittedSignal.aborted) {
           status(key, "dropped_cancelled"); return reject(value.requestId, "busy", "Active signal changed during admission; no SDK submission");
         }
-        const expiresAt = Math.min(Date.now() + QUEUE_TTL_MS, value.sentAt + QUEUE_TTL_MS);
+        const expiresAt = Date.now() + queueTtlMs;
         const timer = setTimeout(() => dropPending(key, "expired"), Math.max(1, expiresAt - Date.now())); timer.unref();
         pending.push({ details, key, expiresAt, timer });
         status(key, "queued");
       }
-      response(socket, value.requestId, true, handled ? "accepted" : canSubmit ? "submitted" : "queued");
+      response(socket, value.requestId, true, handled ? "accepted" : canSubmit ? "submitted" : "queued",
+        undefined, pending.find(entry => entry.key === key)?.expiresAt);
       finished = true;
       socket.end();
     };
@@ -904,16 +790,17 @@ export default function (pi: ExtensionAPI) {
     if (process.platform !== "win32") await rm(peer.socketPath, { force: true }).catch(() => {});
   }
 
-  async function livePeers(): Promise<Peer[]> {
+  async function livePeers(signal?: AbortSignal): Promise<Peer[]> {
     if (!current || shuttingDown) return [];
     const peers = (await registeredPeers()).filter((peer) => peer.instanceId !== current?.instanceId);
     const results = await Promise.all(
       peers.map(async (peer) => {
         try {
-          await exchange(peer, undefined, undefined, PROBE_TIMEOUT_MS, incarnationAbort.signal);
+          await exchange(peer, undefined, undefined, PROBE_TIMEOUT_MS,
+            signal ? AbortSignal.any([signal, incarnationAbort.signal]) : incarnationAbort.signal);
           return peer;
         } catch {
-          if (!alive(peer.pid)) await removePeer(peer);
+          if (!signal?.aborted && !incarnationAbort.signal.aborted && !alive(peer.pid)) await removePeer(peer);
           return null;
         }
       }),
@@ -930,7 +817,12 @@ export default function (pi: ExtensionAPI) {
     if (bridgeEnvelope(text) && goalId) throw new DeliveryError("invalid_goal", "Goal-scoped messages cannot use bridge routing");
     if (!current || shuttingDown) throw new DeliveryError("not_ready", "Cross-session messaging is not ready");
     if (!text.trim()) throw new DeliveryError("invalid_message", "Message text must not be empty");
-    const peers = await livePeers();
+    const checkCancellation = () => {
+      if (sendingSignal.aborted) throw new DeliveryError("cancelled_before_send", "Cancelled before sending the message; no remote admission occurred");
+    };
+    checkCancellation();
+    const peers = await livePeers(sendingSignal);
+    checkCancellation();
     const trimmed = target.trim().replace(/^@/, "");
     const namedRef = /^(.*\S)\s+\[([0-9a-f]{6,32})\]$/.exec(trimmed);
     if (!trimmed) throw new DeliveryError("invalid_target", "Target must not be empty");
@@ -960,10 +852,12 @@ export default function (pi: ExtensionAPI) {
     const charged = budget > 0;
     if (charged) budget--; // Reserve synchronously; even rejected/unknown scoped attempts cost budget.
     else confirmedGoalSends.delete(goalSendKey); // One free in-flight attempt per prior confirmation, no concurrent fan-out.
+    updateInboxStatus();
     try {
       const receipt = await exchange(peer, current, frame, SEND_TIMEOUT_MS, sendingSignal);
       if (goalId && ["submitted", "queued"].includes(receipt.status) && current?.instanceId === incarnation && !shuttingDown) {
         if (charged) budget++;
+        updateInboxStatus();
         confirmedGoalSends.add(goalSendKey);
         while (confirmedGoalSends.size > 64) confirmedGoalSends.delete(confirmedGoalSends.values().next().value!);
       }
@@ -1039,11 +933,33 @@ export default function (pi: ExtensionAPI) {
       summary: Type.Optional(Type.String({ minLength: 1, maxLength: 400, description: "Optional one-line preview (200 Unicode characters after normalization); defaults to the first line" })),
       goalId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Receiver-issued active goal ID; receiver must have bound this exact sender runtime. Never inferred from message text." })),
     }),
-    async execute(_toolCallId, params) {
-      const { peer, receipt, messageId } = await send(params.target, params.message, params.summary, undefined, undefined, params.goalId);
+    async execute(_toolCallId, params, signal) {
+      const { peer, receipt, messageId } = await send(params.target, params.message, params.summary, undefined, signal, params.goalId);
       return {
         content: [{ type: "text", text: `Message ${receipt.status} to ${cleanName(peer.name)} [${short(peer.instanceId)}]; Pi's extension API does not provide a durable delivery acknowledgement` }],
-        details: { status: receipt.status, messageId, target: publicPeer(peer) },
+        details: { status: receipt.status, messageId, target: publicPeer(peer), ...(receipt.expiresAt !== undefined && { expiresAt: receipt.expiresAt }) },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "get_pi_message_status", label: "Peer Message Status",
+    description: "Query a message receipt on the exact receiver runtime returned by send_pi_message. Does not resend or trigger a turn; unknown is not proof of non-delivery.",
+    parameters: Type.Object({
+      target: Type.String({ pattern: "^[0-9a-f]{32}$", description: "Exact receiver instanceId from the send receipt" }),
+      messageId: Type.String({ pattern: "^[A-Za-z0-9_-]{1,128}$" }),
+    }, { additionalProperties: false }),
+    async execute(_id, params, signal) {
+      if (!validInstance(params.target) || !validId(params.messageId)) throw new DeliveryError("invalid_request", "Exact runtime and message IDs required");
+      const local = current;
+      const requestSignal = signal ? AbortSignal.any([signal, incarnationAbort.signal]) : incarnationAbort.signal;
+      if (!local || shuttingDown) throw new DeliveryError("not_ready", "Local inbox unavailable");
+      const peer = await readPeer(params.target);
+      if (!peer) throw new DeliveryError("not_found", "Receiver incarnation unavailable; prior delivery remains unknown");
+      const receipt = await exchange(peer, local, { v: 1, type: "status", requestId: randomUUID(), messageId: params.messageId }, SEND_TIMEOUT_MS, requestSignal);
+      return {
+        content: [{ type: "text", text: `${receipt.status}: ${receipt.error ?? "Receipt state only, not business completion"}` }],
+        details: { status: receipt.status, messageId: params.messageId, target: publicPeer(peer), diagnostic: receipt.error },
       };
     },
   });
@@ -1064,6 +980,7 @@ export default function (pi: ExtensionAPI) {
       peerIds: Type.Optional(Type.Array(Type.String({ pattern: "^[0-9a-f]{32}$" }), { minItems: 1, maxItems: 64 })),
       runIds: Type.Optional(Type.Array(Type.String({ pattern: "^[A-Za-z0-9_-]{1,128}$" }), { minItems: 1, maxItems: 64 })),
       agentIds: Type.Optional(Type.Array(Type.String({ pattern: "^[A-Za-z0-9_-]{1,128}$" }), { minItems: 1, maxItems: 64 })),
+      subagentRunIds: Type.Optional(Type.Array(Type.String({ pattern: "^[A-Za-z0-9_-]{1,128}$" }), { minItems: 1, maxItems: 64 })),
     }, { additionalProperties: false }),
     async execute(_id, params, _signal, _update, ctx) {
       const scope = goalScope(ctx), previous = goals.current, signal = activeSignal;
@@ -1072,26 +989,26 @@ export default function (pi: ExtensionAPI) {
       if (params.action !== "status") {
         if (!local() && !(params.action === "complete" && scopedTurnGoal(ctx) === previous && previous && !turnCancelled && !ctx.signal?.aborted)) throw new Error("Peer goal management requires local user/Host authority; peers cannot grant or widen authorization");
         if (params.action === "start") {
-          if (provenance !== "user" || !params.objective?.trim() || !params.objective.isWellFormed() || params.objective.length > 4096 || params.goalId || params.peerIds || params.runIds || params.agentIds) throw new Error("start requires only an objective authorized by the current local user turn");
+          if (provenance !== "user" || !params.objective?.trim() || !params.objective.isWellFormed() || params.objective.length > 4096 || params.goalId || params.peerIds || params.runIds || params.agentIds || params.subagentRunIds) throw new Error("start requires only an objective authorized by the current local user turn");
           goals.start(params.objective.trim(), scope);
         } else {
           if (!goals.valid(previous, scope) || params.goalId !== previous.id || params.objective) throw new Error("Exact active local goalId required; objective cannot be changed");
-          for (const values of [params.peerIds, params.runIds, params.agentIds]) if (values && (!Array.isArray(values) || !values.length || values.length > 64 || values.some(value => !validId(value)))) throw new Error("Invalid bounded goal bindings");
+          for (const values of [params.peerIds, params.runIds, params.agentIds, params.subagentRunIds]) if (values && (!Array.isArray(values) || !values.length || values.length > 64 || values.some(value => !validId(value)))) throw new Error("Invalid bounded goal bindings");
           if (params.action === "bind") {
-            if (!params.peerIds?.length && !params.runIds?.length && !params.agentIds?.length) throw new Error("bind requires peers or task handles");
+            if (!params.peerIds?.length && !params.runIds?.length && !params.agentIds?.length && !params.subagentRunIds?.length) throw new Error("bind requires peers or task handles");
             const peers = params.peerIds ? await livePeers() : [];
             const selected = (params.peerIds ?? []).map(id => peers.find(peer => peer.instanceId === id));
             if (selected.some(peer => !peer)) throw new Error("Every peerId must name an exact live runtime");
             if (!local() || !goals.valid(previous, goalScope(ctx))) throw new Error("Goal binding revoked while resolving peers");
             if (new Set([...previous.peers.keys(), ...selected.map(peer => peer!.instanceId)]).size > 64) throw new Error("A goal supports at most 64 concurrently bound peers; unbind unused peers first");
-            goals.bindTasks(previous.id, params.runIds, params.agentIds);
+            goals.bindTasks(previous.id, params.runIds, params.agentIds, params.subagentRunIds);
             for (const peer of selected) previous.peers.set(peer!.instanceId, peer!.id);
           } else if (params.action === "unbind") {
-            if (!params.peerIds?.length || params.runIds || params.agentIds) throw new Error("unbind requires only peerIds");
+            if (!params.peerIds?.length || params.runIds || params.agentIds || params.subagentRunIds) throw new Error("unbind requires only peerIds");
             for (const id of params.peerIds) previous.peers.delete(id);
             for (const entry of [...pending]) if (entry.details.goalId && !goals.match(entry.details, scope)) dropPending(entry.key, "dropped_goal_revoked");
           } else if (params.action === "complete" || params.action === "cancel") {
-            if (params.peerIds || params.runIds || params.agentIds) throw new Error("Ending a goal accepts only action and goalId");
+            if (params.peerIds || params.runIds || params.agentIds || params.subagentRunIds) throw new Error("Ending a goal accepts only action and goalId");
             revokeGoal();
           } else throw new Error("Unknown peer_goal action");
         }
@@ -1132,7 +1049,12 @@ export default function (pi: ExtensionAPI) {
         if (querying && identity && Object.isFrozen(identity) && (identity as { version?: number }).version === 1 && (identity as { managed?: boolean }).managed === true) managed = true;
       } });
       querying = false;
-      if (managed) { shuttingDown = true; return; }
+      if (managed || managedSubagent) { shuttingDown = true; return; }
+      const queueSeconds = pi.getFlag("cross-session-queue-ttl-seconds");
+      if (typeof queueSeconds !== "string" || !/^\d+$/.test(queueSeconds) || Number(queueSeconds) < 30 || Number(queueSeconds) > 3600) {
+        throw new Error("cross-session-queue-ttl-seconds must be an integer from 30 through 3600");
+      }
+      queueTtlMs = Number(queueSeconds) * 1000;
       process.on("beforeExit", beforeExit);
       installRpc();
       stopped = false; turnCancelled = false; terminalSuccess = false; phase = ctx.isIdle() ? "idle" : "preflight"; provenance = "unknown"; inputSource = "unknown";
@@ -1268,6 +1190,7 @@ export default function (pi: ExtensionAPI) {
     // Ordinary completion notifications are trusted even without a Mesh permit.
     const safe = terminalSuccess && !!activeSignal && !activeSignal.aborted && (provenance !== "unknown" || notificationTurn) && !turnCancelled;
     if (!safe) latch(); // Includes error/backoff cancellation and unobserved terminal outcome.
+    else if (stopped && provenance === "user" && pi.getFlag("cross-session-auto-resume") === true && !shuttingDown) reopenInbox();
     unwatch(); unwatch = () => {}; activeSignal = undefined;
     continuations.settle();
     phase = "idle"; provenance = "unknown"; submittedKey = undefined; notificationTurn = false;
@@ -1293,7 +1216,7 @@ export default function (pi: ExtensionAPI) {
     if (!observes(ctx)) return;
     const allow = () => {
       const goal = goals.current;
-      if (goals.valid(goal, goalScope(ctx)) && (event.toolName === "Agent" || event.toolName === "mesh" && ["run", "continue"].includes(String(event.input.action)))) goals.note(goal, event.toolName, event.toolCallId);
+      if (goals.valid(goal, goalScope(ctx)) && (event.toolName === "Agent" || event.toolName === "mesh" && ["run", "continue"].includes(String(event.input.action)) || event.toolName === "subagent" && subagentCreatesTask(event.input))) goals.note(goal, event.toolName, event.toolCallId);
     };
     if (provenance === "user" && !turnCancelled && !(event.toolName === "mesh" && event.input.action === "continue")) {
       if (event.toolName === "mesh") continuations.note(event.toolCallId, event.input, continuationScope(ctx));
@@ -1313,21 +1236,21 @@ export default function (pi: ExtensionAPI) {
       if (notificationTurn && !turnCancelled && !ctx.signal?.aborted) return allow();
     }
     // Explicit known authority-bearing entry points, not a classifier for arbitrary Bash.
-    const directAuthorityTools = ["Agent", "agent", "subagent", "steer_subagent", "send_subagent", "send_user_message", "set_active_tools", "set_config"];
-    const sensitive = directAuthorityTools.includes(event.toolName) ||
+    const directAuthorityTools = ["Agent", "agent", "subagent", "subagents_enable", "steer_subagent", "send_subagent", "send_user_message", "set_active_tools", "set_config"];
+    const sensitive = (directAuthorityTools.includes(event.toolName) && !(event.toolName === "subagent" && subagentReadOnly(event.input))) ||
       event.toolName === "peer_goal" && event.input.action !== "status" && !(event.input.action === "complete" && scoped && event.input.goalId === scoped.id && !turnCancelled && !ctx.signal?.aborted) ||
       event.toolName === "mesh" && !["list_agents", "status", "list", "handoff_list", "message_inbox", "message_ack", "growth_list"].includes(String(event.input.action)) ||
       event.toolName === "mesh_control" && event.input.action === "grow";
-    // cross-session-guard (default off): a live, non-cancelled, unscoped peer-driven turn may
+    // Explicit legacy opt-out only: a live, non-cancelled, unscoped peer-driven turn may
     // use the direct authority tools above (subagent/Agent/steer/send/messaging/config). Goal-
     // scoped turns keep the goal's stricter contract, mesh, mesh_control and peer_goal keep
     // their own fences in every mode, and every sensitive tool stays blocked in cancelled,
     // unknown or notification-only contexts.
-    const guardCarveOut = pi.getFlag("cross-session-guard") !== true && provenance === "peer" && !turnCancelled && !scoped && !ctx.signal?.aborted && directAuthorityTools.includes(event.toolName);
+    const guardCarveOut = pi.getFlag("cross-session-guard") === false && provenance === "peer" && !turnCancelled && !peerTurn?.goalId && !notificationGoals.length && !ctx.signal?.aborted && directAuthorityTools.includes(event.toolName);
     if (sensitive && !guardCarveOut) return { block: true, reason: "Peer-only/cancelled turn cannot authorize task creation, resume, growth or policy changes; ask the local user" };
   });
   pi.on("tool_result", (event, ctx) => {
-    if (observes(ctx) && !event.isError) goals.record(event.toolCallId, event.toolName, event.details);
+    if (observes(ctx)) goals.record(event.toolCallId, event.toolName, event.details);
   });
   pi.registerCommand("cross-session-resume", {
     description: "Explicit local user reopens peer admission after observed cancellation; never replays dropped messages",
@@ -1336,7 +1259,18 @@ export default function (pi: ExtensionAPI) {
       for (const entry of [...pending]) dropPending(entry.key, "dropped_user_reset");
       clearTimeout(submissionTimer); submissionTimer = undefined;
       phase = "idle"; provenance = "unknown"; inputSource = "unknown"; submittedKey = undefined; notificationTurn = false; epoch++;
-      stopped = false; ctx.ui.notify("Peer admission reopened; dropped messages are not replayed and budget is not refilled", "info");
+      reopenInbox(); ctx.ui.notify("Peer admission reopened; dropped messages are not replayed and budget is not refilled", "info");
+    },
+  });
+  pi.registerCommand("cross-session-budget", {
+    description: "Local-user-only: set the remaining unscoped communication allowance (1–4096); no inbox/grant recovery",
+    handler: async (args, ctx) => {
+      if (!ctx.isIdle() || activeSignal || !current || shuttingDown) { ctx.ui.notify("Wait for an idle, registered session", "warning"); return; }
+      const value = args.trim();
+      if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 4096) { ctx.ui.notify("Usage: /cross-session-budget <1–4096>", "warning"); return; }
+      budget = Number(value);
+      updateInboxStatus();
+      ctx.ui.notify(`Unscoped allowance set to ${budget}; inbox state and goal grants unchanged`, "info");
     },
   });
   pi.registerCommand("cross-session-status", {

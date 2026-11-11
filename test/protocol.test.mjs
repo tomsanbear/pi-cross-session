@@ -112,7 +112,7 @@ test('component/IPC: queued TTL and shutdown/heartbeat synchronous getter failur
   assert.equal(info(b).states[0].state, 'expired');
   assert.ok(!registrations().some(p => p.instanceId === a.peer.instanceId)); assert.ok(!fs.existsSync(a.peer.socketPath));
   assert.equal(b.calls.length, 0);
-}, { rpc: true }));
+}, { rpc: true, queueTtlSeconds: 30 }));
 
 for (const capabilities of [[], ['cancel-safe-queue-v1']]) test(`component/IPC: new sender refuses missing ${capabilities.length ? 'goal' : 'queue'} capability BEFORE message frame`, async () => fixtures(async (a, b) => {
   await b.emit('session_shutdown');

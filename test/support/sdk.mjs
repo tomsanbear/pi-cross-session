@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { findPackageJSON } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 export const repo = fileURLToPath(new URL('../../', import.meta.url));
 const sdkRoot = path.join(repo, 'node_modules/@earendil-works/pi-coding-agent');
 export const sdk = await import(`${sdkRoot}/dist/index.js`);
-const { createAssistantMessageEventStream } = await import(`${sdkRoot}/node_modules/@earendil-works/pi-ai/dist/index.js`);
+export const sdkVersion = JSON.parse(fs.readFileSync(path.join(sdkRoot, 'package.json'), 'utf8')).version;
+const aiRoot = path.dirname(findPackageJSON('@earendil-works/pi-ai', import.meta.resolve('@earendil-works/pi-coding-agent')));
+const { createAssistantMessageEventStream } = await import(pathToFileURL(path.join(aiRoot, 'dist/index.js')).href);
 const { emitSessionShutdownEvent } = await import(`${sdkRoot}/dist/core/extensions/runner.js`);
 export const { createEventBus } = await import(`${sdkRoot}/dist/core/event-bus.js`);
 export const agentDir = process.env.PI_CODING_AGENT_DIR;
@@ -17,7 +20,7 @@ export async function until(fn, label = 'condition', ms = 7000) { const end = Da
 export function hold() { let release; const promise = new Promise(r => release = r); return { promise, release }; }
 export function registrations() { return fs.existsSync(agentDir + '/peers') ? fs.readdirSync(agentDir + '/peers').filter(f => /^[0-9a-f]{32}\.json$/.test(f)).map(f => JSON.parse(fs.readFileSync(agentDir + '/peers/' + f, 'utf8'))) : []; }
 let totalCalls = 0;
-export async function make(name, { inbound = 'accept', rpc = false, guard = false, managed = false, extra, tools = [], retry = false } = {}) {
+export async function make(name, { inbound = 'accept', rpc = false, guard = true, managed = false, extra, tools = [], retry = false } = {}) {
   const { ModelRuntime, SettingsManager, DefaultResourceLoader, createAgentSession, SessionManager } = sdk;
   const cwd = path.join(process.env.PI_CROSS_TEST_PRIVATE_ROOT, 'cwd'); fs.mkdirSync(cwd, { recursive: true });
   const runtime = await ModelRuntime.create({ authPath: agentDir + '/' + randomUUID() + '-auth.json', modelsPath: null, modelsStorePath: agentDir + '/' + randomUUID() + '-models.json', allowModelNetwork: false, refreshOnCreate: false });

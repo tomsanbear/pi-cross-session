@@ -138,22 +138,22 @@ test('second authority scope: closed peer/unknown/cancelled continuations gated;
   } finally { await b.close(); await a.close(); }
 });
 
-test('second guard switch: live peer turn direct tools default ALLOWED; flag restores blocks; mesh/unknown fences stay', async () => {
+test('second guard switch: explicit legacy opt-out allows live peer direct tools; default blocks; mesh/unknown fences stay', async () => {
   const a = await component('guard-switch-sender');
-  const b = await component('guard-switch-host');
+  const b = await component('guard-switch-host', { guard: false });
   try {
     await wire(a, b, message('peer asks for a subagent'));
     await b.emit('input', { source: 'interactive' }); // Cross submission owns preflight; provenance stays peer.
-    for (const toolName of ['subagent', 'Agent', 'send_subagent', 'set_config']) assert.equal(await b.emit('tool_call', { toolName, input: {} }), undefined, `${toolName} allowed by default in a live peer turn`);
+    for (const toolName of ['subagent', 'Agent', 'send_subagent', 'set_config']) assert.equal(await b.emit('tool_call', { toolName, input: {} }), undefined, `${toolName} allowed only with explicit guard opt-out in a live peer turn`);
     assert.equal((await b.emit('tool_call', { toolName: 'mesh', input: { action: 'run' } })).block, true, 'mesh authority keeps its fence with the guard off');
     assert.equal((await b.emit('tool_call', { toolName: 'peer_goal', input: { action: 'start', objective: 'x' } })).block, true, 'peer_goal keeps its fence with the guard off');
     await b.settled(false); // cancelled/unknown context: fences unchanged.
     assert.equal((await b.emit('tool_call', { toolName: 'subagent', input: {} })).block, true, 'non-peer provenance still blocks after settle');
   } finally { await b.close(); }
-  const c = await component('guard-switch-on', { guard: true });
+  const c = await component('guard-switch-on');
   try {
     await wire(a, c, message('peer asks again'));
     await c.emit('input', { source: 'interactive' });
-    assert.deepEqual(await c.emit('tool_call', { toolName: 'subagent', input: {} }), { block: true, reason }, 'flag on restores the block');
+    assert.deepEqual(await c.emit('tool_call', { toolName: 'subagent', input: {} }), { block: true, reason }, 'default guard blocks');
   } finally { await c.close(); await a.close(); }
 });

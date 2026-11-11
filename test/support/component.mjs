@@ -12,7 +12,8 @@ export async function component(name, options = {}) {
   assert.deepEqual(errors, []); const ext = extensions[0];
   runtime.flagValues.set('cross-session-rpc', !!options.rpc);
   runtime.flagValues.set('cross-session-inbound', options.inbound ?? 'accept');
-  runtime.flagValues.set('cross-session-guard', options.guard === true);
+  runtime.flagValues.set('cross-session-guard', options.guard !== false);
+  if (options.queueTtlSeconds !== undefined) runtime.flagValues.set('cross-session-queue-ttl-seconds', String(options.queueTtlSeconds));
   runtime.getSessionName = () => name;
   runtime.sendMessage = (message, opts) => { calls.push({ message, opts }); };
   runtime.appendEntry = (customType, data) => entries.push({ type: 'custom', customType, data, id: randomUUID(), parentId: null, timestamp: new Date().toISOString() });

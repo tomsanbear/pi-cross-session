@@ -13,5 +13,5 @@
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": false
   },
-  "include": ["extensions/**/*.ts"]
+  "include": ["extensions/**/*.ts", "lib/**/*.ts"]
 }

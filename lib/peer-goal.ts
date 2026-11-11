@@ -6,8 +6,21 @@ import { allowsSubagent, subagentNotificationIds, subagentRunIds } from "./subag
 export const GOAL_ENTRY = "cross-session:goal-ownership:v1";
 type Scope = { sessionId: string; instanceId: string; cwd: string };
 type TaskKind = "mesh" | "agent" | "subagent";
-type Ownership = { goalId: string; callId?: string; tool?: string; runs?: string[]; agents?: string[]; subagentRuns?: string[] };
-export type PeerGoal = { id: string; objective: string; scope: Scope; active: boolean; peers: Map<string, string> };
+type Ownership = {
+  goalId: string;
+  callId?: string;
+  tool?: string;
+  runs?: string[];
+  agents?: string[];
+  subagentRuns?: string[];
+};
+export type PeerGoal = {
+  id: string;
+  objective: string;
+  scope: Scope;
+  active: boolean;
+  peers: Map<string, string>;
+};
 
 function resultIds(tool: string, details: unknown): Partial<Record<TaskKind, string[]>> {
   const result = details as { run?: { id?: unknown }; agentId?: unknown } | undefined;
@@ -20,22 +33,44 @@ function resultIds(tool: string, details: unknown): Partial<Record<TaskKind, str
 export class PeerGoals {
   current?: PeerGoal;
 
-  constructor(private readonly entries: () => SessionEntry[], private readonly append: (data: Ownership) => void) {}
+  constructor(
+    private readonly entries: () => SessionEntry[],
+    private readonly append: (data: Ownership) => void,
+  ) {}
 
   start(objective: string, scope: Scope): PeerGoal {
-    if (this.current) throw new Error("Complete or cancel the current peer goal before starting another");
-    return this.current = { id: randomUUID(), objective, scope: { ...scope }, active: true, peers: new Map() };
+    if (this.current)
+      throw new Error("Complete or cancel the current peer goal before starting another");
+    return (this.current = {
+      id: randomUUID(),
+      objective,
+      scope: { ...scope },
+      active: true,
+      peers: new Map(),
+    });
   }
 
   valid(goal: PeerGoal | undefined, scope: Scope): goal is PeerGoal {
-    return !!goal && goal === this.current && goal.active && goal.scope.sessionId === scope.sessionId &&
-      goal.scope.instanceId === scope.instanceId && goal.scope.cwd === scope.cwd;
+    return (
+      !!goal &&
+      goal === this.current &&
+      goal.active &&
+      goal.scope.sessionId === scope.sessionId &&
+      goal.scope.instanceId === scope.instanceId &&
+      goal.scope.cwd === scope.cwd
+    );
   }
 
-  match(details: { goalId?: string; from: { id: string; instanceId: string } }, scope: Scope): PeerGoal | undefined {
+  match(
+    details: { goalId?: string; from: { id: string; instanceId: string } },
+    scope: Scope,
+  ): PeerGoal | undefined {
     const goal = this.current;
-    return this.valid(goal, scope) && goal.id === details.goalId &&
-      goal.peers.get(details.from.instanceId) === details.from.id ? goal : undefined;
+    return this.valid(goal, scope) &&
+      goal.id === details.goalId &&
+      goal.peers.get(details.from.instanceId) === details.from.id
+      ? goal
+      : undefined;
   }
 
   end(): void {
@@ -43,7 +78,9 @@ export class PeerGoals {
     this.current = undefined;
   }
 
-  reset(): void { this.end(); } // Revocation never erases task ownership evidence.
+  reset(): void {
+    this.end();
+  } // Revocation never erases task ownership evidence.
 
   private ownership(entry: SessionEntry): Ownership | undefined {
     if (entry.type !== "custom" || entry.customType !== GOAL_ENTRY) return;
@@ -82,14 +119,25 @@ export class PeerGoals {
     }
   }
 
-  bindTasks(goalId: string, runs: string[] = [], agents: string[] = [], subagentRuns: string[] = []): void {
-    for (const [kind, ids] of [["mesh", runs], ["agent", agents], ["subagent", subagentRuns]] as const) {
+  bindTasks(
+    goalId: string,
+    runs: string[] = [],
+    agents: string[] = [],
+    subagentRuns: string[] = [],
+  ): void {
+    for (const [kind, ids] of [
+      ["mesh", runs],
+      ["agent", agents],
+      ["subagent", subagentRuns],
+    ] as const) {
       for (const id of ids) {
         const previous = this.owner(kind, id);
-        if (previous && previous !== goalId) throw new Error("Task is already bound to a different goal");
+        if (previous && previous !== goalId)
+          throw new Error("Task is already bound to a different goal");
       }
     }
-    if (runs.length || agents.length || subagentRuns.length) this.append({ goalId, runs, agents, subagentRuns });
+    if (runs.length || agents.length || subagentRuns.length)
+      this.append({ goalId, runs, agents, subagentRuns });
   }
 
   record(callId: string, tool: string, details: unknown): void {
@@ -108,7 +156,10 @@ export class PeerGoals {
       for (const id of ids) {
         if (typeof id !== "string") continue;
         const parts = id.split(":");
-        const owner = this.owner(parts[0] === "mesh" ? "mesh" : "agent", parts[0] === "mesh" ? parts[1] : parts[0]);
+        const owner = this.owner(
+          parts[0] === "mesh" ? "mesh" : "agent",
+          parts[0] === "mesh" ? parts[1] : parts[0],
+        );
         if (owner) goals.add(owner);
       }
     }
@@ -122,12 +173,26 @@ export class PeerGoals {
   allows(goal: PeerGoal, tool: string, input: Record<string, unknown>): boolean {
     if (!goal.active) return false;
     if (tool === "subagents_enable") return true;
-    if (tool === "subagent") return allowsSubagent(input, id => this.owner("subagent", id) === goal.id);
-    if (tool === "Agent") return !input.schedule && (!input.resume || this.owner("agent", input.resume) === goal.id);
-    if (tool === "steer_subagent" || tool === "send_subagent") return this.owner("agent", input.agent_id) === goal.id;
+    if (tool === "subagent")
+      return allowsSubagent(input, (id) => this.owner("subagent", id) === goal.id);
+    if (tool === "Agent")
+      return !input.schedule && (!input.resume || this.owner("agent", input.resume) === goal.id);
+    if (tool === "steer_subagent" || tool === "send_subagent")
+      return this.owner("agent", input.agent_id) === goal.id;
     if (tool !== "mesh") return false;
     if (input.action === "run") return true;
-    return ["continue", "resume", "retry_failed", "steer", "cancel", "pause", "message_send", "message_broadcast", "growth_decide"].includes(String(input.action)) &&
-      this.owner("mesh", input.runId) === goal.id;
+    return (
+      [
+        "continue",
+        "resume",
+        "retry_failed",
+        "steer",
+        "cancel",
+        "pause",
+        "message_send",
+        "message_broadcast",
+        "growth_decide",
+      ].includes(String(input.action)) && this.owner("mesh", input.runId) === goal.id
+    );
   }
 }

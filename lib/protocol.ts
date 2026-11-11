@@ -42,21 +42,38 @@ export type ResponseFrame = {
 };
 
 const unknownReceiptCodes = new Set([
-  "timeout", "connection_closed", "cancelled", "transport_error", "invalid_response", "invalid_receipt",
+  "timeout",
+  "connection_closed",
+  "cancelled",
+  "transport_error",
+  "invalid_response",
+  "invalid_receipt",
 ]);
 export class DeliveryError extends Error {
   readonly state: string;
   readonly retryable: boolean;
   readonly next: string;
 
-  constructor(readonly code: string, message: string) {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
     super(`${code}: ${message}`);
-    this.state = code === "cancelled_before_send" ? "not_sent" : unknownReceiptCodes.has(code) ? "receipt_unknown" : "refused";
+    this.state =
+      code === "cancelled_before_send"
+        ? "not_sent"
+        : unknownReceiptCodes.has(code)
+          ? "receipt_unknown"
+          : "refused";
     this.retryable = ["busy", "queue_full", "rate_limited"].includes(code);
-    this.next = this.state === "not_sent" ? "Cancelled before transmission; send again only on a new authorized request" :
-      this.state === "receipt_unknown" ? "Query message status on the same incarnation; never auto-retry" :
-      this.retryable ? "Wait for a safe idle recipient, then explicitly retry" :
-      "Inspect status/identity and policy; upgrade peers if unsupported";
+    this.next =
+      this.state === "not_sent"
+        ? "Cancelled before transmission; send again only on a new authorized request"
+        : this.state === "receipt_unknown"
+          ? "Query message status on the same incarnation; never auto-retry"
+          : this.retryable
+            ? "Wait for a safe idle recipient, then explicitly retry"
+            : "Inspect status/identity and policy; upgrade peers if unsupported";
     this.name = "DeliveryError";
   }
 }
@@ -64,7 +81,10 @@ export class DeliveryError extends Error {
 export function encodeFrame(frame: object): string {
   const line = `${JSON.stringify(frame)}\n`;
   if (Buffer.byteLength(line) > MAX_FRAME_BYTES) {
-    throw new DeliveryError("message_too_large", `Serialized cross-session message exceeds ${MAX_FRAME_BYTES.toLocaleString("en-US")} bytes`);
+    throw new DeliveryError(
+      "message_too_large",
+      `Serialized cross-session message exceeds ${MAX_FRAME_BYTES.toLocaleString("en-US")} bytes`,
+    );
   }
   return line;
 }
@@ -73,9 +93,11 @@ export function encodeFrame(frame: object): string {
 // A malformed later frame cannot revoke an already processed earlier frame.
 export function frameReader(onLine: (line: string) => boolean, onError: (code: string) => void) {
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  let text = "", bytes = 0, stopped = false;
+  let text = "",
+    bytes = 0,
+    stopped = false;
   return (chunk: Buffer) => {
-    for (let offset = 0; offset < chunk.length && !stopped;) {
+    for (let offset = 0; offset < chunk.length && !stopped; ) {
       const newline = chunk.indexOf(10, offset);
       const end = newline < 0 ? chunk.length : newline + 1;
       const part = chunk.subarray(offset, end);
@@ -104,8 +126,12 @@ export function frameReader(onLine: (line: string) => boolean, onError: (code: s
 }
 
 function validCapabilities(value: unknown): boolean {
-  return value === undefined || Array.isArray(value) && value.length <= 8 &&
-    value.every(item => typeof item === "string" && item.length <= 64);
+  return (
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.length <= 8 &&
+      value.every((item) => typeof item === "string" && item.length <= 64))
+  );
 }
 function boundedString(value: unknown, max: number): value is string {
   return typeof value === "string" && value.length <= max;
@@ -117,32 +143,57 @@ function sessionId(value: unknown): value is string {
 export function isResponse(value: unknown): value is ResponseFrame {
   if (!value || typeof value !== "object") return false;
   const frame = value as Partial<ResponseFrame>;
-  return frame.v === WIRE_VERSION && frame.type === "response" && validId(frame.requestId) &&
-    typeof frame.ok === "boolean" && boundedString(frame.status, 64) && validCapabilities(frame.capabilities) &&
-    [frame.code, frame.state].every(item => item === undefined || boundedString(item, 64)) &&
+  return (
+    frame.v === WIRE_VERSION &&
+    frame.type === "response" &&
+    validId(frame.requestId) &&
+    typeof frame.ok === "boolean" &&
+    boundedString(frame.status, 64) &&
+    validCapabilities(frame.capabilities) &&
+    [frame.code, frame.state].every((item) => item === undefined || boundedString(item, 64)) &&
     (frame.next === undefined || boundedString(frame.next, 2048)) &&
     (frame.error === undefined || boundedString(frame.error, 4096)) &&
     (frame.retryable === undefined || typeof frame.retryable === "boolean") &&
-    (frame.expiresAt === undefined || Number.isSafeInteger(frame.expiresAt) && frame.expiresAt > 0);
+    (frame.expiresAt === undefined ||
+      (Number.isSafeInteger(frame.expiresAt) && frame.expiresAt > 0))
+  );
 }
 
 export function isHello(value: unknown): value is HelloFrame {
   if (!value || typeof value !== "object") return false;
   const frame = value as Partial<HelloFrame>;
-  return frame.v === WIRE_VERSION && frame.type === "hello" && validCapabilities(frame.capabilities) &&
-    validId(frame.requestId) && typeof frame.token === "string" &&
-    !!frame.target && sessionId(frame.target.id) && validInstance(frame.target.instanceId) &&
-    (frame.from === undefined || !!frame.from && sessionId(frame.from.id) &&
-      validInstance(frame.from.instanceId) && typeof frame.from.token === "string");
+  return (
+    frame.v === WIRE_VERSION &&
+    frame.type === "hello" &&
+    validCapabilities(frame.capabilities) &&
+    validId(frame.requestId) &&
+    typeof frame.token === "string" &&
+    !!frame.target &&
+    sessionId(frame.target.id) &&
+    validInstance(frame.target.instanceId) &&
+    (frame.from === undefined ||
+      (!!frame.from &&
+        sessionId(frame.from.id) &&
+        validInstance(frame.from.instanceId) &&
+        typeof frame.from.token === "string"))
+  );
 }
 
 export function isMessage(value: unknown): value is MessageFrame {
   if (!value || typeof value !== "object") return false;
   const frame = value as Partial<MessageFrame>;
-  return frame.v === WIRE_VERSION && frame.type === "message" &&
-    validId(frame.requestId) && validId(frame.messageId) &&
-    boundedString(frame.text, MAX_MESSAGE_CHARS) && frame.text.isWellFormed() &&
-    typeof frame.summary === "string" && frame.summary.isWellFormed() && !!frame.summary.trim() &&
-    Array.from(frame.summary).length <= 200 && Number.isSafeInteger(frame.sentAt) &&
-    (frame.goalId === undefined || validId(frame.goalId));
+  return (
+    frame.v === WIRE_VERSION &&
+    frame.type === "message" &&
+    validId(frame.requestId) &&
+    validId(frame.messageId) &&
+    boundedString(frame.text, MAX_MESSAGE_CHARS) &&
+    frame.text.isWellFormed() &&
+    typeof frame.summary === "string" &&
+    frame.summary.isWellFormed() &&
+    !!frame.summary.trim() &&
+    Array.from(frame.summary).length <= 200 &&
+    Number.isSafeInteger(frame.sentAt) &&
+    (frame.goalId === undefined || validId(frame.goalId))
+  );
 }

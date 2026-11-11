@@ -213,4 +213,9 @@ test("default guard blocks unscoped authority, with explicit legacy opt-out", as
     }
     b.runtime.flagValues.set("cross-session-guard", false);
     assert.equal(await gate(b, "subagent"), undefined);
+    b.runtime.flagValues.set("cross-session-guard", true);
+    b.runtime.flagValues.set("cross-session-unsafe-peer-tools", true);
+    assert.equal(await gate(b, "subagent"), undefined);
+    await b.settled(false);
+    assert.equal((await gate(b, "subagent"))?.block, true);
   }));

@@ -56,10 +56,13 @@ Outgoing tool cancellation now reaches discovery and socket exchange. Cancellati
 | CLI flag | Default | Behavior |
 | --- | --- | --- |
 | `--cross-session-inbound=accept\|refuse` | `accept` | Invalid values refuse inbound messages |
-| `--cross-session-guard=true\|false` | **`true`** | Gate known delegation/configuration tools in unscoped peer turns. Explicit `false` restores upstream's permissive behavior; not recommended |
+| `--cross-session-guard` | **enabled** | Gate known delegation/configuration tools in unscoped peer turns; retained for upstream compatibility |
+| `--cross-session-unsafe-peer-tools` | `false` | Explicitly restore upstream's permissive unscoped peer tools; not recommended |
 | `--cross-session-queue-ttl-seconds=600` | **600** | Busy queue retention, integer **30–3600 seconds**; invalid configuration disables registration |
 | `--cross-session-auto-resume` | `false` | Reopen reception only after the next clean genuine local-user turn |
 | `--cross-session-rpc` | `false` | Enable trusted Host EventBus send/info/received contracts |
+
+Pi's boolean extension flags are presence switches: `--flag=false` is not a reliable way to disable them on supported SDKs. Use the explicit unsafe flag only if you deliberately want that behavior. `/cross-session-status` reports the effective guard, queue retention and auto-resume settings.
 
 An observed abort or unsafe terminal settlement closes reception, drops pending messages and revokes the collaboration goal. The footer shows **peers paused**. `/cross-session-resume` reopens the inbox after settlement. With auto-resume enabled, a successful genuine user turn also reopens it; peer messages, extension notifications and failed turns cannot. Neither path replays messages, renews goals or replenishes budget.
 

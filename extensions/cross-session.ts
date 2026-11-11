@@ -559,10 +559,19 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerFlag("cross-session-guard", {
     description:
-      "Block unscoped peer delegation/configuration tools (default true; false explicitly restores legacy behavior)",
+      "Block unscoped peer delegation/configuration tools (default true; retained for compatibility)",
     type: "boolean",
     default: true,
   });
+  pi.registerFlag("cross-session-unsafe-peer-tools", {
+    description:
+      "Explicitly allow legacy unscoped peer delegation/configuration tools; NOT recommended",
+    type: "boolean",
+    default: false,
+  });
+  const guardEnabled = () =>
+    pi.getFlag("cross-session-guard") !== false &&
+    pi.getFlag("cross-session-unsafe-peer-tools") !== true;
   pi.registerFlag("cross-session-auto-resume", {
     description:
       "Reopen inbound peers after a clean genuine local-user turn; never replay dropped messages or restore grants",
@@ -2241,7 +2250,7 @@ export default function (pi: ExtensionAPI) {
     // their own fences in every mode, and every sensitive tool stays blocked in cancelled,
     // unknown or notification-only contexts.
     const guardCarveOut =
-      pi.getFlag("cross-session-guard") === false &&
+      !guardEnabled() &&
       provenance === "peer" &&
       !turnCancelled &&
       !peerTurn?.goalId &&
@@ -2310,6 +2319,9 @@ export default function (pi: ExtensionAPI) {
         JSON.stringify({
           stopped,
           phase,
+          guardEnabled: guardEnabled(),
+          queueTtlSeconds: queueTtlMs / 1000,
+          autoResume: pi.getFlag("cross-session-auto-resume") === true,
           remainingBudget: budget,
           pending: pending.length,
           messages: [...statuses.values()],

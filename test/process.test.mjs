@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import { repo, until, registrations } from "./support/sdk.mjs";
+import { repo, until, registrations, sdkVersion } from "./support/sdk.mjs";
 function worker(name) {
   const child = spawn(process.execPath, [repo + "/test/support/worker.mjs", name], {
     cwd: process.env.PI_CROSS_TEST_PRIVATE_ROOT,
@@ -75,7 +75,7 @@ test(
       }
       console.log(
         JSON.stringify({
-          evidence: "two OS processes/SDK 0.84.4/Unix IPC",
+          evidence: `two OS processes/SDK ${sdkVersion}/Unix IPC`,
           pids: [A.pid, B.pid],
           calls: 2,
           responses: 2,

@@ -11,11 +11,8 @@ const { createJiti } = createRequire(import.meta.resolve("@earendil-works/pi-cod
 );
 const load = createJiti(import.meta.url);
 const { isHello, isMessage, isResponse } = await load.import("../lib/protocol.ts");
-const { MeshContinuations } = await load.import("../lib/mesh-continuation.ts");
-const { PeerGoals, GOAL_ENTRY } = await load.import("../lib/peer-goal.ts");
 const { trimOldest } = await load.import("../lib/collections.ts");
 const root = fileURLToPath(new URL("../", import.meta.url));
-
 function sources(directory, extension = ".ts") {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const file = path.join(directory, entry.name);
@@ -29,8 +26,8 @@ test("production source has no explicit any, non-null assertions or TypeScript s
     ...sources(path.join(root, "extensions")),
     ...sources(path.join(root, "lib")),
   ]) {
-    const text = fs.readFileSync(file, "utf8");
-    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+    const text = fs.readFileSync(file, "utf8"),
+      source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
     function visit(node) {
       if (node.kind === ts.SyntaxKind.AnyKeyword || ts.isNonNullExpression(node)) {
         const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
@@ -45,8 +42,7 @@ test("production source has no explicit any, non-null assertions or TypeScript s
 });
 
 test("JavaScript fixtures and fork tooling have no unused imports, locals or parameters", () => {
-  // Deliberately an unused-code audit, not a claim that controlled JS stubs
-  // implement the entire SDK type surface. Production types are checked by tsc.
+  // An unused-code audit, not a claim that controlled JS stubs implement the entire SDK type surface.
   const files = [
     ...sources(path.join(root, "test"), ".mjs"),
     ...sources(path.join(root, ".fork"), ".mjs"),
@@ -93,44 +89,14 @@ test("wire guards reject malformed nested identity and optional metadata", () =>
     { ...peer, pid: "1" },
     { ...peer, pid: 0 },
     { ...peer, instanceId: "wrong" },
-  ]) {
+  ])
     assert.equal(isResponse({ ...response, peer: invalid }), false, JSON.stringify(invalid));
-  }
   for (const value of [null, [], true, 1, "x"]) {
     assert.equal(isResponse(value), false);
     assert.equal(isHello(value), false);
     assert.equal(isMessage(value), false);
   }
-  assert.equal(isResponse({ ...response, expiresAt: "123" }), false);
-});
-
-test("Mesh continuation validates adaptive options instead of treating arrays as objects", () => {
-  const scope = { sessionId: "session", cwd: "/fixture" };
-  for (const adaptive of [
-    [],
-    { maxRuns: 0 },
-    { maxRuns: "1" },
-    { maxRuns: 1.5 },
-    { maxRuns: Number.MAX_SAFE_INTEGER + 1 },
-  ]) {
-    const mesh = new MeshContinuations();
-    const input = { action: "run", tasks: [{ task: "repair" }], autoContinuation: adaptive };
-    let issued = false;
-    mesh.note("call", input, scope);
-    mesh.issue({
-      version: 1,
-      callId: "call",
-      input: JSON.stringify(input),
-      ...scope,
-      reply: () => {
-        issued = true;
-      },
-    });
-    assert.equal(issued, false, JSON.stringify(adaptive));
-  }
-  const mesh = new MeshContinuations();
-  for (const invalid of [null, [], true, "x", { callId: 5 }])
-    assert.doesNotThrow(() => mesh.issue(invalid));
+  assert.equal(isResponse({ ...response, retryable: "yes" }), false);
 });
 
 test("collection eviction preserves insertion order and validates bounds", () => {
@@ -148,45 +114,4 @@ test("collection eviction preserves insertion order and validates bounds", () =>
   assert.equal(set.size, 0);
   for (const invalid of [-1, 0.5, Infinity])
     assert.throws(() => trimOldest(map, invalid), RangeError);
-});
-
-test("malformed unrelated journal fields never erase exact revoked ownership", () => {
-  const entries = [
-    {
-      type: "custom",
-      customType: GOAL_ENTRY,
-      data: {
-        goalId: "revoked",
-        runs: ["known-mesh", null],
-        agents: 42,
-        subagentRuns: ["known-subagent", 7],
-      },
-    },
-  ];
-  const goals = new PeerGoals(
-    () => entries,
-    () => {},
-  );
-  assert.equal(goals.owner("mesh", "known-mesh"), "revoked");
-  assert.equal(goals.owner("subagent", "known-subagent"), "revoked");
-  assert.equal(goals.owner("agent", "unknown"), undefined);
-});
-
-test("malformed journal ownership is ignored rather than trusted through a cast", () => {
-  for (const bad of [
-    null,
-    1,
-    [],
-    { goalId: "goal", runs: 42 },
-    { goalId: "goal", agents: "id" },
-    { goalId: "goal", subagentRuns: [1] },
-  ]) {
-    const entries = [{ type: "custom", customType: GOAL_ENTRY, data: bad }];
-    const goals = new PeerGoals(
-      () => entries,
-      () => {},
-    );
-    for (const kind of ["mesh", "agent", "subagent"])
-      assert.equal(goals.owner(kind, "id"), undefined);
-  }
 });

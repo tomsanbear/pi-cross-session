@@ -23,7 +23,6 @@ export type MessageFrame = {
   text: string;
   summary: string;
   sentAt: number;
-  goalId?: string;
 };
 export type StatusFrame = { v: 1; type: "status"; requestId: string; messageId: string };
 export type ResponseFrame = {
@@ -34,7 +33,6 @@ export type ResponseFrame = {
   status: string;
   error?: string;
   capabilities?: string[];
-  expiresAt?: number;
   code?: string;
   state?: string;
   retryable?: boolean;
@@ -160,7 +158,6 @@ export function isResponse(value: unknown): value is ResponseFrame {
     (frame.next === undefined || isBoundedString(frame.next, 2048)) &&
     (frame.error === undefined || isBoundedString(frame.error, 4096)) &&
     (frame.retryable === undefined || typeof frame.retryable === "boolean") &&
-    (frame.expiresAt === undefined || isSafeInteger(frame.expiresAt, 1)) &&
     (frame.peer === undefined || responsePeer(frame.peer))
   );
 }
@@ -199,7 +196,6 @@ export function isMessage(value: unknown): value is MessageFrame {
     frame.summary.isWellFormed() &&
     !!frame.summary.trim() &&
     Array.from(frame.summary).length <= 200 &&
-    isSafeInteger(frame.sentAt, Number.MIN_SAFE_INTEGER) &&
-    (frame.goalId === undefined || validId(frame.goalId))
+    isSafeInteger(frame.sentAt, Number.MIN_SAFE_INTEGER)
   );
 }

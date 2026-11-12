@@ -1,7 +1,7 @@
 import { isRecord, isSafeInteger } from "./validation.ts";
 
 // Thin Host EventBus contract. No tool execution, persistence, mapping, or retries.
-export const CAPABILITY = "cancel-safe-queue-v1";
+export const CAPABILITY = "live-inbox-v1";
 export const RPC_SEND = "cross-session:rpc:send";
 export const RPC_INFO = "cross-session:rpc:info";
 export const RECEIVED = "cross-session:received";
@@ -14,7 +14,7 @@ export type BridgeEnvelope = {
   expiresAt: number;
   hops: number;
   budget: number;
-  payload: unknown; // Mesh owns exact mapping/generation validation; never authority.
+  payload: unknown; // Adapter-owned data; never new user approval.
 };
 export type SendRequest = {
   version: 1;

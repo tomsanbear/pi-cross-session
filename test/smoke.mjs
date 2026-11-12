@@ -14,17 +14,8 @@ assert.ok(
 const cwd = path.join(root, "cli-cwd");
 fs.mkdirSync(cwd, { recursive: true });
 for (const variant of [
-  { flags: [], guard: true, ttl: 600, autoResume: false },
-  {
-    flags: [
-      "--cross-session-unsafe-peer-tools",
-      "--cross-session-queue-ttl-seconds=90",
-      "--cross-session-auto-resume",
-    ],
-    guard: false,
-    ttl: 90,
-    autoResume: true,
-  },
+  { flags: [], inbound: "accept" },
+  { flags: ["--cross-session-inbound=refuse", "--cross-session-rpc"], inbound: "refuse" },
 ]) {
   const child = spawn(
     process.execPath,
@@ -93,7 +84,7 @@ for (const variant of [
           const event = JSON.parse(line);
           if (event.type === "extension_ui_request" && event.method === "notify") {
             const value = JSON.parse(event.message);
-            if (typeof value.guardEnabled === "boolean") effective = value;
+            if (typeof value.inbound === "string") effective = value;
           }
         } catch {
           /* Other RPC lines are not the status notification. */
@@ -102,9 +93,15 @@ for (const variant of [
       if (!effective) await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.ok(effective, out + err);
-    assert.equal(effective.guardEnabled, variant.guard);
-    assert.equal(effective.queueTtlSeconds, variant.ttl);
-    assert.equal(effective.autoResume, variant.autoResume);
+    assert.equal(effective.inbound, variant.inbound);
+    assert.equal(peer.inbound, variant.inbound);
+    assert.equal(effective.pending, 0);
+    assert.equal(effective.remainingBudget, undefined);
+    assert.ok(
+      !response.data.commands.some((c) =>
+        ["cross-session-resume", "cross-session-budget"].includes(c.name),
+      ),
+    );
     child.stdin.end();
     assert.deepEqual(await exited, { code: 0, signal: null }, out + err);
     assert.ok(!fs.existsSync(peer.socketPath), "EOF must remove endpoint");

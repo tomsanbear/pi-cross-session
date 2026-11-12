@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { repo, createEventBus, registrations, sleep, until } from "./sdk.mjs";
+import { CAPABILITY } from "../../lib/contract.ts";
 const { loadExtensions } = await import(
   repo + "/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js"
 );
@@ -25,9 +26,6 @@ export async function component(name, options = {}) {
   const ext = extensions[0];
   runtime.flagValues.set("cross-session-rpc", !!options.rpc);
   runtime.flagValues.set("cross-session-inbound", options.inbound ?? "accept");
-  runtime.flagValues.set("cross-session-guard", options.guard !== false);
-  if (options.queueTtlSeconds !== undefined)
-    runtime.flagValues.set("cross-session-queue-ttl-seconds", String(options.queueTtlSeconds));
   runtime.getSessionName = () => name;
   runtime.sendMessage = (message, opts) => {
     calls.push({ message, opts });
@@ -103,7 +101,7 @@ export function hello(a, b, safe = true) {
     token: b.peer.token,
     target: { id: b.peer.id, instanceId: b.peer.instanceId },
     ...(a && { from: { id: a.peer.id, instanceId: a.peer.instanceId, token: a.peer.token } }),
-    ...(safe && { capabilities: ["cancel-safe-queue-v1"] }),
+    ...(safe && { capabilities: [CAPABILITY] }),
   };
 }
 export function message(text = "hello", overrides = {}) {

@@ -35,6 +35,7 @@ const documents = [
   "FORK.md",
   "AGENTS.md",
   "README.md",
+  "CHANGELOG.md",
   ...fs
     .readdirSync(path.join(root, ".fork"))
     .filter((file) => file.endsWith(".md"))

@@ -44,6 +44,48 @@ test("component/I/O fault: serialized registration write fenced by shutdown; ind
     await a.close();
   }
 });
+test("late lifecycle events during shutdown cannot leave a replacement inbox busy", async () => {
+  const a = await component("late-a"),
+    b = await component("late-b");
+  let release,
+    entered = false;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  hook = async (file) => {
+    if (String(file).includes(`.${b.peer.instanceId}.`)) {
+      entered = true;
+      await gate;
+    }
+  };
+  let writing, closing;
+  try {
+    writing = b.emit("session_info_changed");
+    await until(() => entered);
+    const listeners = process.listenerCount("beforeExit");
+    closing = b.emit("session_shutdown");
+    await until(
+      () => process.listenerCount("beforeExit") === listeners - 1,
+      "cleanup entered while registration write is held",
+    );
+    await b.emit("agent_start");
+    release();
+    await writing;
+    await closing;
+    hook = async () => {};
+    await b.emit("session_start");
+    b.peer = registrations().find((peer) => peer.name === "late-b");
+    assert.equal((await wire(a, b)).status, "submitted");
+  } finally {
+    release();
+    await writing;
+    await closing;
+    hook = async () => {};
+    await b.close();
+    await a.close();
+  }
+});
+
 test("component: overlapping starts/shutdown do not resurrect registrations; listener count returns to baseline", async () => {
   const baseline = process.listenerCount("beforeExit");
   const b = await component("racer");
@@ -71,7 +113,8 @@ for (const initial of [undefined, "/fixture/pre-existing-parent.sock"])
         b = await make("env-b");
         managed = await make("env-managed", { managed: true });
         assert.notEqual(a.peer.socketPath, b.peer.socketPath);
-        assert.equal(managed.peer, undefined);
+        assert.ok(managed.peer);
+        assert.notEqual(managed.peer.socketPath, a.peer.socketPath);
         const check = async (x) => {
           assert.equal(
             process.env[key],

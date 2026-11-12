@@ -49,15 +49,7 @@ export function registrations() {
 let totalCalls = 0;
 export async function make(
   name,
-  {
-    inbound = "accept",
-    rpc = false,
-    guard = true,
-    managed = false,
-    extra,
-    tools = [],
-    retry = false,
-  } = {},
+  { inbound = "accept", rpc = false, managed = false, extra, tools = [], retry = false } = {},
 ) {
   const {
     ModelRuntime,
@@ -198,7 +190,6 @@ export async function make(
   assert.deepEqual(loader.getExtensions().errors, []);
   loader.getExtensions().runtime.flagValues.set("cross-session-inbound", inbound);
   loader.getExtensions().runtime.flagValues.set("cross-session-rpc", rpc);
-  loader.getExtensions().runtime.flagValues.set("cross-session-guard", guard === true);
   const { session } = await createAgentSession({
     cwd,
     agentDir,
@@ -215,7 +206,7 @@ export async function make(
   await session.bindExtensions({ mode: "rpc", onError: (e) => errors.push(e) });
   session.setActiveToolsByName([]);
   const peer = registrations().find((p) => p.id === session.sessionManager.getSessionId());
-  assert.equal(!!peer, !managed);
+  assert.ok(peer, "every loaded session registers independently of orchestration identity");
   let closed = false;
   return {
     name,

@@ -2,7 +2,26 @@
 
 Comparison baseline and maintenance rules: [FORK.md](../FORK.md). This is a cumulative record, including nonfunctional changes. Current installation and tool usage belong in [README.md](../README.md).
 
-## Delivery and recovery
+## Current policy: live inbox, version 3 (2026-11-12)
+
+The operator explicitly chose **remove all collaboration restrictions**, retaining sender qualification, IPC authentication and basic resource limits. This supersedes the goal/guard/pause/quota policies in the historical sections below.
+
+- Removed cancellation/error reception latches, manual/automatic resume logic, success/source-dependent admission, pending-message cancellation drops and queue expiry. Admitted messages stay in FIFO order until SDK handoff is attempted or the session runtime ends; actual synchronous handoff failures remain explicit `injection_failed` receipts without blind replay; an open idle session needs no local user prompt to resume delivery.
+- Removed `peer_goal`, goal membership/task ownership journals, sensitive-tool interception, Mesh continuation permits, the pi-subagents-specific authorization adapter and child-runtime exclusions. Deleted `lib/peer-goal.ts`, `lib/mesh-continuation.ts` and the fork-added `lib/subagents.ts`. Every session that actually loads this extension registers; native host permissions still operate independently. Mesh adapters depending on the removed Cross continuation permits need their own authorization path; this fork does not bypass their separate policies.
+- Retained the exact ordinary peer qualification paragraph and sender identity on every model-facing message. No message is promoted to user approval; this is guidance rather than plugin-enforced tool authorization. No tool-call/result policy handlers remain.
+- Removed the shared 256-message lifetime allowance and RPC lifetime-request cap. Pending count, frame/connection/rate/dedup bounds remain; RPC uses 32 in-flight requests plus 512 recent IDs, protecting active requests from eviction. Pending/current message IDs and receipts remain protected when recent caches roll over.
+- Removed `/cross-session-resume`, `/cross-session-budget`, `goalId` tool arguments and guard/unsafe-peer-tools/auto-resume/queue-TTL flags. Only explicit inbound accept/refuse and optional in-process RPC flags remain.
+- SDK submissions use `followUp`, not steering. Pending mail drains after any settlement, including abort, error and unknown outcomes. A scheduling-only `before_agent_start`/`agent_start` reservation prevents overlapping SDK prompts on older hosts that report idle during preflight; it does not refuse incoming mail or gate tools. Late lifecycle callbacks during teardown are ignored, and the scheduling reservation is reset for each replacement runtime so it cannot leave a new inbox permanently busy.
+- Retained outgoing operation cancellation: an unsent message can still be cancelled; an uncertain transmission is never automatically retried. Unconfirmed asynchronous submission releases its local reservation when idle without replaying the message or closing the inbox. Temporary SDK-state getter failures retain mail until state reporting recovers.
+- Registration-refresh failures retain the live endpoint/inbox and expose a diagnostic instead of shutting everything down. Failed initial startup still cleans up partial resources. Shutdown/reload/session replacement still ends the volatile queue; no durable storage was introduced.
+- Introduced negotiated `live-inbox-v1` rather than silently advertising the old cancellation/drop contract. Both senders and receivers refuse incompatible messaging before admission; discovery still lists legacy peers. Legacy goal metadata is explicitly unsupported instead of pretending a removed grant contract remains active.
+- Bumped package and lock metadata to `3.0.0-fork.1` for this breaking API/protocol-policy change. Added packaged/formatted `CHANGELOG.md` with upgrade instructions and rewrote README for the new behavior.
+- Deleted the obsolete goal/Mesh authority test suites and `test/review-second.test.mjs`, whose remaining assertions required the removed gates. Replaced cancellation/drop and quota assertions with positive retention, FIFO, automatic post-cancel delivery, no tool interception and unbounded-lifetime tests. Retained transport authentication, framing, rate/queue bounds, receipts, I/O faults, cleanup, outgoing cancellation, independent host-permission tests and source hygiene. Removed strict-history/continuation tests with their deleted modules, not to hide failures in retained behavior.
+- Added `test/live-inbox.test.mjs`, updated fixtures and real-SDK scenarios, corrected separate-process evidence labels to identify the SDK actually used, and adapted CLI smoke tests to the two remaining flags. No external model calls, real worker launches or live Pi settings changes were used during implementation.
+
+Local and CI evidence for this revision is recorded separately in [verification.md](verification.md). Earlier test counts are historical: suites for intentionally deleted features are no longer applicable.
+
+## Historical v2 delivery and recovery
 
 Introduced in `241b07d`; CLI correction in `69b561b`.
 
@@ -12,7 +31,7 @@ Introduced in `241b07d`; CLI correction in `69b561b`.
 - **Recovery:** opt-in `cross-session-auto-resume` reopens reception only after a successful genuine local-user turn. It never replays dropped messages, restores grants or refills allowance. Manual `/cross-session-resume` shares the reopening path. The footer reports paused reception and low allowance; cleanup clears its status.
 - **Allowance:** `/cross-session-budget <1–4096>` lets an idle local user explicitly set remaining unscoped allowance. Initial 256-unit allowance, scoped-traffic exemption, rate/dedup limits and the separate RPC-request cap remain. The command does not reopen the inbox or renew a goal.
 
-## Authority and pi-subagents
+## Historical v2 authority and pi-subagents
 
 Introduced in `241b07d`; explicit CLI opt-out finalized in `69b561b`.
 
@@ -72,5 +91,6 @@ Implemented in `cde5590` after `f3c3e49`; local checks and all four CI jobs pass
 | `69b561b` | Explicit unsafe CLI opt-out, effective-settings diagnostics and parsed-flag smoke coverage              |
 | `f3c3e49` | Deferred-prompt fixture synchronization, deterministic regression and current pinned CI actions         |
 | `cde5590` | Complete fork record, strict runtime boundaries, source/fixture hygiene and seven new regression checks |
+| `d4ca9f7` | Documentation-only recording of strict-cleanup CI evidence                                              |
 
 Git history is the exact patch record. This ledger explains decisions and coverage; it does not replace the diffs.

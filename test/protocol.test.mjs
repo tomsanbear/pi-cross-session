@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { component, wire, message, hello, info } from "./support/component.mjs";
 import { repo, sleep, registrations, until } from "./support/sdk.mjs";
+import { CAPABILITY } from "../lib/contract.ts";
 async function fixtures(fn, options = {}) {
   const a = await component("sender"),
     b = await component("receiver", options);
@@ -57,29 +58,20 @@ test("list_pi: resolves current Git worktree, branch and HEAD; non-Git cwd is nu
     }
   }));
 
-test("component/IPC: legacy idle submitted, legacy busy refuses BEFORE SDK; new busy queues; duplicate ID", async () =>
+test("component/IPC: legacy capability refuses before admission; live inbox queues and deduplicates", async () =>
   fixtures(async (a, b) => {
-    const m = message("legacy-idle");
-    assert.equal((await wire(a, b, m, { safe: false })).status, "submitted");
-    assert.equal(b.calls.length, 1);
-    assert.equal((await wire(a, b, message("preflight-second"))).status, "busy");
-    assert.equal(b.calls.length, 1);
-    await b.emit("agent_start"); // Unknown signal => cannot queue even if SDK says idle.
-    assert.equal((await wire(a, b, message("unknown"))).status, "busy");
-    await b.settled();
-    assert.equal((await wire(a, b, message("unknown completion stays closed"))).status, "stopped");
-    await b.command("cross-session-resume");
-    await b.busy();
-    assert.equal((await wire(a, b, message("legacy-busy"), { safe: false })).status, "busy");
-    const queued = message("new-busy");
+    assert.equal((await wire(a, b, message("legacy"), { safe: false })).status, "unsupported");
+    assert.equal(b.calls.length, 0);
+    assert.equal((await wire(a, b, message("idle"))).status, "submitted");
+    const queued = message("second");
     assert.equal((await wire(a, b, queued)).status, "queued");
     assert.equal(
       (await wire(a, b, { ...queued, text: "changed text same ID" })).status,
       "duplicate",
     );
     assert.equal(b.calls.length, 1);
-    await b.settled();
-    assert.equal(b.calls.length, 2);
+    await b.settled(false);
+    await until(() => b.calls.length === 2);
   }));
 
 test("component/IPC: authentication, null/empty IDs, invalid text, UTF8, multi-frame, byte cap and endpoint mode", async () =>
@@ -176,7 +168,7 @@ test("component/IPC: three sessions ambiguity, old ref, invalid tool parameters,
 });
 
 test(
-  "component/IPC: queue MAX_PENDING=50, short rate, status and total non-refilling budget=256",
+  "component/IPC: queue MAX_PENDING=50, short rate and sender-qualified status",
   { timeout: 20000 },
   async () => {
     const a = await component("sender1"),
@@ -203,31 +195,8 @@ test(
         ).status,
         "queued",
       );
-      b.setIdle(true);
-      b.ctx.signal = undefined; // Discarded stub run: SDK idle has no active signal.
-      await b.emit("session_start"); // new incarnation resets only here, not at settled
-      b.peer = registrations().find((p) => p.name === "receiver");
-      b.bus.on("cross-session:received", (e) => e.reply({ handled: true }));
-      const realNow = Date.now;
-      let now = realNow();
-      Date.now = () => now;
-      try {
-        for (let i = 0; i < 256; i++) {
-          now += 2100;
-          assert.equal((await wire(a, b, message("budget" + i))).status, "accepted");
-          if (i % 30 === 0) {
-            await b.busy();
-            await b.settled();
-          }
-        }
-        assert.equal(info(b).remainingBudget, 0);
-        await b.busy();
-        await b.settled();
-        assert.equal((await wire(a, b, message("over-budget"))).status, "budget_exhausted");
-        assert.equal(info(b).states.length, 256);
-      } finally {
-        Date.now = realNow;
-      }
+      assert.equal(info(b).pending, 50);
+      assert.equal(info(b).remainingBudget, undefined);
     } finally {
       await b.close();
       await c.close();
@@ -237,13 +206,13 @@ test(
 );
 
 test(
-  "component/IPC: queued TTL and shutdown/heartbeat synchronous getter failure (real 31s)",
+  "component/IPC: queued mail and inbox survive heartbeat getter failure (real 31s)",
   { timeout: 40000 },
   async () =>
     fixtures(
       async (a, b) => {
         await b.busy();
-        const m = message("expire");
+        const m = message("retain");
         assert.equal((await wire(a, b, m)).status, "queued");
         a.runtime.getSessionName = () => {
           throw Error("stale synchronous getter");
@@ -262,17 +231,20 @@ test(
           "unknown",
           "status source-qualified",
         );
-        assert.equal(info(b).states[0].state, "expired");
-        assert.ok(!registrations().some((p) => p.instanceId === a.peer.instanceId));
-        assert.ok(!fs.existsSync(a.peer.socketPath));
+        assert.equal(info(b).states[0].state, "queued");
+        assert.ok(registrations().some((p) => p.instanceId === a.peer.instanceId));
+        assert.ok(fs.existsSync(a.peer.socketPath));
+        assert.equal((await wire(undefined, a, null)).status, "ready");
         assert.equal(b.calls.length, 0);
+        await b.settled(false);
+        await until(() => b.calls.length === 1);
       },
-      { rpc: true, queueTtlSeconds: 30 },
+      { rpc: true },
     ),
 );
 
 for (const capabilities of [[], ["cancel-safe-queue-v1"]])
-  test(`component/IPC: new sender refuses missing ${capabilities.length ? "goal" : "queue"} capability BEFORE message frame`, async () =>
+  test(`component/IPC: new sender refuses ${capabilities.length ? "legacy" : "missing"} inbox capability BEFORE message frame`, async () =>
     fixtures(async (a, b) => {
       await b.emit("session_shutdown");
       fs.writeFileSync(
@@ -311,7 +283,6 @@ for (const capabilities of [[], ["cancel-safe-queue-v1"]])
           a.tool("send_pi_message", {
             target: b.peer.instanceId,
             message: "unsafe fallback forbidden",
-            ...(capabilities.length ? { goalId: "receiver-goal" } : {}),
           }),
           (e) => e.code === "unsupported",
         );
@@ -357,7 +328,7 @@ test(
                   requestId: f.requestId,
                   ok: true,
                   status: "ready",
-                  capabilities: ["cancel-safe-queue-v1"],
+                  capabilities: [CAPABILITY],
                   peer: { id: b.peer.id, instanceId: b.peer.instanceId, pid: process.pid },
                 }) + "\n",
               );

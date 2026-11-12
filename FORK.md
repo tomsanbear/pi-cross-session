@@ -2,7 +2,7 @@
 
 This is [tomsanbear/pi-cross-session](https://github.com/tomsanbear/pi-cross-session), derived from [gcoder1991/pi-cross-session](https://github.com/gcoder1991/pi-cross-session) at **`f7454db3531e05449eff295d25039655474c9680`** (upstream v2.4.0). That commit is the comparison baseline, not a moving upstream branch.
 
-The fork adds cancellation-safe outgoing tools, sender-side receipt queries, bounded configurable queue retention, explicit recovery controls, safer authorization defaults, and goal-scoped direct pi-subagents support. It also maintains cross-version tests, CI, formatting and type-safety cleanup. See [README.md](README.md) for current user-facing behavior.
+The fork provides a continuously reachable live-session inbox: authenticated, origin-qualified peer messages, bounded non-expiring pending queues and sender-side receipt queries. Version 3 removes the earlier fork/upstream collaboration gates, goals, cancellation pauses and lifetime quotas at the operator's request; the history below records those earlier policies and their removal. Transport protections, strict typing, cross-version tests and CI remain. See [README.md](README.md) for current behavior and [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 ## Read only the detail needed
 

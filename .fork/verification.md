@@ -20,7 +20,23 @@ git diff --check
 
 SDK tests use private HOME/agent directories, a deterministic local provider and network-denial preloads. No paid model calls or live user settings are needed. `CROSS_TEST_NODE` can select an explicit supported Node executable.
 
-## Verified implementation: 2026-11-11, `f3c3e49`
+## Live-inbox policy removal: 2026-11-12, version 3
+
+The operator explicitly selected removal of all collaboration restrictions. Obsolete goal/continuation/authorization suites were deleted with those features; old cancellation/quota assertions were replaced by the selected retention/unrestricted-lifetime behavior. A lower test count is not presented as equivalent feature coverage. Retained transport, authentication, cleanup, strictness and independent host-permission checks still run.
+
+Evidence collected during implementation:
+
+- Three focused checks failed against v2: the goal/gate/resume surface still existed, RPC stopped at its lifetime cap, and busy preflight refused messages. Those checks pass under the live-inbox implementation.
+- Real SDK 0.84.4 exposed a scheduling race: it can report idle while `before_agent_start` is still pending. A peer submission then overlapped the original prompt. A scheduling-only run reservation now holds admitted mail until settlement, without refusing mail, checking turn provenance or gating tools. The regression now requires queued admission and exact-once FIFO delivery.
+- A delayed-registration shutdown probe reproduced a stale lifecycle callback marking a replacement inbox busy. Ignoring callbacks during teardown and resetting the scheduling reservation on startup corrected it; the probe now requires immediate submission on the replacement runtime.
+- Retention tests cover abort, error, length, tool-use and unknown terminal outcomes, a simulated 24-hour queued wait, temporary SDK-state failure, 540 consecutive RPC messages and pending-ID protection across recent-cache eviction.
+- Real SDK tests verify queued and fresh messages after cancellation without a local prompt, retry-backoff cancellation, automatic retry success, ordinary notifications, no Cross tool interception and preservation of a separate host permission extension.
+- The first complete 0.84.4 run passed 81 tests with one version-specific skip. After adding SDK-state recovery and late-teardown regressions, final local verification passed **83 tests plus one version-specific skip on Pi 0.84.4**, and **84 tests with no skips on Pi 1.5.2** (Node 24.15.0, macOS).
+- Both local SDK runs also passed strict typechecking, formatting, the 47-path fork-record check and both real CLI smoke variants. Package dry-run confirms version `3.0.0-fork.1`, packaged changelog/records and absence of the deleted authorization modules; no archive was created.
+
+CI verification for this v3 change is pending its push. Earlier v2 runs below are historical evidence only.
+
+## Historical implementation: 2026-11-11, `f3c3e49`
 
 [Successful four-job CI run](https://github.com/tomsanbear/pi-cross-session/actions/runs/43119917131).
 
@@ -40,7 +56,7 @@ Local macOS checks against both SDK versions also passed with the same counts. A
 - CLI boolean semantics: source inspection showed supported SDKs treat boolean flags as presence switches. Replaced the misleading `--cross-session-guard=false` CLI guidance with an explicit unsafe flag and real parsed-flag smoke assertions.
 - [First CI run](https://github.com/tomsanbear/pi-cross-session/actions/runs/43119062341) and [second CI run](https://github.com/tomsanbear/pi-cross-session/actions/runs/43119423892): newer-SDK positive controls sometimes asserted before deferred genuine-user prompts executed. A deterministic held-`agent_settled` regression reproduced the early return. The shared command helper now waits for request-specific preflight acknowledgement and actual idle completion; original authorization assertions remain intact.
 
-## Strict cleanup and fork record: 2026-11-11
+## Historical strict cleanup and fork record: 2026-11-11
 
 Baseline evidence for this follow-up:
 
@@ -64,8 +80,8 @@ This evidence was added in a documentation-only follow-up; production code and t
 ## Coverage boundaries
 
 - Native Windows remains unverified. The named-pipe path tests do not establish Windows ACL or runtime behavior.
-- pi-subagents integration uses inert tools matching the public argument/receipt/notification contract. It does not launch real worker models or validate every future pi-subagents version.
-- Managed-child identity is lifecycle policy, not authentication. Same-account processes able to read tokens remain inside the trust boundary.
+- Tool-interception tests use inert tools, not real workers or configuration mutations. They prove that this plugin no longer adds a gate, not that a model will obey sender qualification.
+- A session must load the extension to register; native orchestrators still decide which extensions/tools their workers load. There is no special runtime-origin exclusion in v3. Same-account processes able to read tokens remain inside the transport trust boundary.
 - Delivery remains same-machine and memory-only; no durable/offline queue, automatic retry or business-completion acknowledgement is claimed.
-- Peer-scoped workflows and unknown management actions remain blocked deliberately. The fork is not a semantic task-scope verifier or arbitrary-tool sandbox.
+- Version 3 does not block peer-driven workflows or management tools. Independent host permissions remain in force; sender qualification is model guidance, not a semantic task-scope verifier or sandbox.
 - JavaScript test fixtures and fork scripts are exercised, formatted and audited for unused code. That audit deliberately checks unused-symbol diagnostics only, not full SDK-interface typing of controlled stubs.

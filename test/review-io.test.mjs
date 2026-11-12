@@ -7,6 +7,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { randomUUID } from "node:crypto";
 import { component, wire, message, hello, info } from "./support/component.mjs";
 import { runtimeDir, until, sleep, hold } from "./support/sdk.mjs";
+import { CAPABILITY } from "../lib/contract.ts";
 // Patch BEFORE the first loader/jiti evaluation; hit assertions below are mandatory.
 const originalStat = fsp.lstat,
   originalWrite = fsp.writeFile;
@@ -120,7 +121,7 @@ for (const fault of [
     }
   });
 
-test("review dedup: sender-qualified A/B/A across settled, same ID tombstones and no budget refill", async () => {
+test("review dedup: sender-qualified A/B/A across settled and same ID tombstones", async () => {
   const a = await component("dedup-a"),
     c = await component("dedup-c"),
     b = await component("dedup-b", { rpc: true });
@@ -134,7 +135,7 @@ test("review dedup: sender-qualified A/B/A across settled, same ID tombstones an
     await b.settled();
     assert.equal((await wire(a, b, message("A"))).status, "duplicate");
     assert.equal((await wire(c, b, message("A"))).status, "accepted");
-    assert.equal(info(b).remainingBudget, 253);
+    assert.equal(info(b).states.length, 3);
     const now = Date.now;
     Date.now = () => now() + 31000;
     try {
@@ -146,7 +147,7 @@ test("review dedup: sender-qualified A/B/A across settled, same ID tombstones an
     } finally {
       Date.now = now;
     }
-    assert.equal(info(b).remainingBudget, 252);
+    assert.equal(info(b).states.length, 4);
   } finally {
     await b.close();
     await c.close();
@@ -183,7 +184,7 @@ async function fakePeer(b, handle, fn) {
               requestId: f.requestId,
               ok: true,
               status: "ready",
-              capabilities: ["cancel-safe-queue-v1"],
+              capabilities: [CAPABILITY],
               peer: { id: b.peer.id, instanceId: b.peer.instanceId, pid: process.pid },
             }) + "\n",
           );
@@ -491,58 +492,39 @@ for (const scenario of [
     }
   });
 
-test("review component: unknown/toolUse/error ending drops queue; internal cancelled/peer continuations never gain tool authority", async () => {
-  const a = await component("evidence-a"),
-    b = await component("evidence-b", { rpc: true, guard: true });
-  try {
-    for (const stopReason of [undefined, "toolUse", "error", "length"]) {
+test(
+  "queued identities and receipts survive recent-cache eviction",
+  { timeout: 15000 },
+  async (t) => {
+    const a = await component("protected-a"),
+      b = await component("protected-b", { rpc: true });
+    let clock = Date.now();
+    t.mock.method(Date, "now", () => clock);
+    try {
       await b.busy();
-      assert.equal((await wire(a, b, message("drop " + stopReason))).status, "queued");
-      if (stopReason) await b.emit("message_end", { message: { role: "assistant", stopReason } });
-      await b.settled(false);
-      assert.ok(info(b).stopped);
-      assert.equal(b.calls.length, 0);
-      assert.ok(info(b).states.every((s) => s.state === "dropped_cancelled"));
-      await b.command("cross-session-resume");
-    }
-    // Explicit reopen starts a new peer turn, not the old cancelled authority.
-    assert.equal((await wire(a, b, message("new peer after reopen"))).status, "submitted");
-    b.ctx.signal = new AbortController().signal;
-    b.setIdle(false);
-    await b.emit("agent_start");
-    for (const iteration of [0, 1]) {
-      if (iteration) {
-        await b.emit("before_agent_start");
-        await b.emit("agent_start");
+      const queued = message("keep this identity");
+      assert.equal((await wire(a, b, queued)).status, "queued");
+      const off = b.bus.on("cross-session:received", (e) => e.reply({ handled: true }));
+      for (let i = 0; i < 520; i++) {
+        clock += 2100;
+        assert.equal((await wire(a, b, message(`other ${i}`))).status, "accepted");
       }
-      for (const [toolName, input] of [
-        ["Agent", {}],
-        ["send_subagent", { agent_id: "fixture", message: "x" }],
-        ["mesh", { action: "resume" }],
-        ["mesh_control", { action: "grow" }],
-      ])
-        assert.equal((await b.emit("tool_call", { toolName, input })).block, true);
+      off();
+      assert.equal(
+        (await wire(a, b, { ...queued, sentAt: clock, text: "reused ID" })).status,
+        "duplicate",
+      );
+      assert.equal(
+        info(b).states.find((row) => row.messageId === queued.messageId).state,
+        "queued",
+      );
+      assert.ok(info(b).states.length <= 512);
+      await b.settled(false);
+      await until(() => b.calls.length === 1);
+      assert.equal(b.calls[0].message.details.text, queued.text);
+    } finally {
+      await b.close();
+      await a.close();
     }
-    assert.equal((await wire(a, b, message("queue after reopen"))).status, "queued");
-    await b.settled();
-    assert.equal(
-      b.calls.length,
-      2,
-      "new peer successful turn can flush, old cancelled flag does not poison it",
-    );
-    await b.emit("message_end", { message: { role: "assistant", stopReason: "aborted" } });
-    await b.emit("agent_start");
-    assert.equal((await b.emit("tool_call", { toolName: "Agent", input: {} })).block, true);
-    await b.settled(false);
-    await b.emit("input", { source: "extension" });
-    await b.emit("agent_start");
-    assert.equal((await b.emit("tool_call", { toolName: "send_subagent", input: {} })).block, true);
-    assert.equal(
-      (await wire(a, b, message("unknown continuation cannot reopen"))).status,
-      "stopped",
-    );
-  } finally {
-    await b.close();
-    await a.close();
-  }
-});
+  },
+);

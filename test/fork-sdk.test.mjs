@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
-import { make, command, tool, until, hold, sleep, sdkVersion } from "./support/sdk.mjs";
+import { make, command, send, until, hold, sleep, sdkVersion } from "./support/sdk.mjs";
 
 test(
   "SDK 1.x: command fixture waits for a prompt deferred during settled handlers",
@@ -31,7 +31,7 @@ test(
         completed = true;
       });
       await sleep(30);
-      assert.equal(completed, false, "command must not return before its deferred prompt starts");
+      assert.equal(completed, false);
       assert.equal(host.calls.length, 1);
       gate.release();
       await Promise.all([initial, followup]);
@@ -46,115 +46,81 @@ test(
   },
 );
 
-// Real SDK lifecycle and IPC, inert pi-subagents-shaped tool. This tests the
-// public adapter contract, not a real worker/model or pi-subagents' scheduler.
-test("SDK: scoped subagent launch/resume ownership survives completion and reload as denial evidence", async () => {
-  let executions = 0;
-  const worker = await make("native-worker");
-  const host = await make("native-host", {
-    tools: ["peer_goal", "subagent"],
-    extra: (pi) =>
-      pi.registerTool({
-        name: "subagent",
-        label: "Inert Subagent",
-        description: "Contract fixture; no child or network",
-        parameters: Type.Object({
-          agent: Type.Optional(Type.String()),
-          task: Type.Optional(Type.String()),
-          action: Type.Optional(Type.String()),
-          id: Type.Optional(Type.String()),
-          message: Type.Optional(Type.String()),
-        }),
-        async execute() {
-          executions++;
-          return {
-            content: [{ type: "text", text: "fixture completed" }],
-            details: {
-              mode: "single",
-              runId: `native-${executions}`,
-              asyncId: `native-${executions}`,
-              results: [],
+for (const toolName of ["subagent", "subagents_enable", "Agent", "mesh", "set_config"]) {
+  test(`real SDK: peer turns do not encounter a Cross tool gate for ${toolName}`, async () => {
+    let executions = 0;
+    const a = await make(`ungated-${toolName}-a`),
+      b = await make(`ungated-${toolName}-b`, {
+        tools: [toolName],
+        extra: (pi) =>
+          pi.registerTool({
+            name: toolName,
+            label: "Inert fixture",
+            description: "No child, configuration mutation or network",
+            parameters: Type.Object({}),
+            async execute() {
+              executions++;
+              return { content: [{ type: "text", text: "fixture executed" }], details: {} };
             },
-          };
-        },
-      }),
+          }),
+      });
+    try {
+      b.session.setActiveToolsByName([toolName]);
+      b.setToolCall({ name: toolName, arguments: {} });
+      await send(a, b, "coordination finding");
+      await until(() => b.calls.length === 2 && b.session.isIdle);
+      assert.equal(executions, 1);
+      assert.equal(
+        b.session.agent.state.messages.find(
+          (m) => m.role === "toolResult" && m.toolName === toolName,
+        ).isError,
+        false,
+      );
+      assert.match(JSON.stringify(b.calls[0].messages), /another agent session, not the user/);
+      assert.deepEqual(b.errors, []);
+    } finally {
+      await b.close();
+      await a.close();
+    }
   });
-  const lastGoalResult = () =>
-    host.session.agent.state.messages
-      .filter((m) => m.role === "toolResult" && m.toolName === "peer_goal")
-      .at(-1);
-  const peerCall = async (goalId, input, text) => {
-    const calls = host.calls.length;
-    host.setToolCall({ name: "subagent", arguments: input });
-    await tool(worker, "send_pi_message").execute("send-fixture", {
-      target: host.peer.instanceId,
-      message: text,
-      goalId,
-    });
-    await until(() => host.calls.length === calls + 2 && host.session.isIdle);
-    return host.session.agent.state.messages
-      .filter((m) => m.role === "toolResult" && m.toolName === "subagent")
-      .at(-1);
-  };
-  try {
-    host.session.setActiveToolsByName(["peer_goal", "subagent"]);
-    host.setToolCall({
-      name: "peer_goal",
-      arguments: { action: "start", objective: "Repair and verify the original task" },
-    });
-    await command(host, "Authorize peer collaboration");
-    const goalId = lastGoalResult().details.goalId;
-    host.setToolCall({
-      name: "peer_goal",
-      arguments: { action: "bind", goalId, peerIds: [worker.peer.instanceId] },
-    });
-    await command(host, "Bind the worker");
-    assert.equal(
-      (await peerCall(goalId, { agent: "worker", task: "repair" }, "launch")).isError,
-      false,
-    );
-    assert.equal(
-      (await peerCall(goalId, { action: "resume", id: "native-1", message: "verify" }, "resume"))
-        .isError,
-      false,
-    );
-    assert.equal(
-      (
-        await peerCall(
-          goalId,
-          { action: "steer", id: "foreign", message: "outside goal" },
-          "refuse foreign",
-        )
-      ).isError,
-      true,
-    );
-    assert.equal(executions, 2);
-    host.setToolCall({ name: "peer_goal", arguments: { action: "complete", goalId } });
-    await command(host, "Goal verified complete");
-    await host.session.reload();
-    host.session.setActiveToolsByName(["peer_goal", "subagent"]);
-    const before = host.calls.length;
-    host.setToolCall({ name: "subagent", arguments: { agent: "worker", task: "must not revive" } });
-    await host.session.sendCustomMessage(
-      {
-        customType: "subagent-notify",
-        content: "Late completion",
-        display: true,
-        details: { runs: [{ id: "native-2", runId: "native-2", source: "async" }] },
+}
+
+test("real SDK: the host's independent permission extension remains authoritative", async () => {
+  let executions = 0;
+  const a = await make("permission-a"),
+    b = await make("permission-b", {
+      tools: ["subagent"],
+      extra: (pi) => {
+        pi.registerTool({
+          name: "subagent",
+          label: "Inert fixture",
+          description: "No real worker",
+          parameters: Type.Object({}),
+          async execute() {
+            executions++;
+            return { content: [], details: {} };
+          },
+        });
+        pi.on("tool_call", (event) =>
+          event.toolName === "subagent"
+            ? { block: true, reason: "Independent host permission policy" }
+            : undefined,
+        );
       },
-      { triggerTurn: true },
+    });
+  try {
+    b.session.setActiveToolsByName(["subagent"]);
+    b.setToolCall({ name: "subagent", arguments: {} });
+    await send(a, b, "a peer is not permission approval");
+    await until(() => b.calls.length === 2 && b.session.isIdle);
+    assert.equal(executions, 0);
+    const result = b.session.agent.state.messages.find(
+      (m) => m.role === "toolResult" && m.toolName === "subagent",
     );
-    await until(() => host.calls.length === before + 2 && host.session.isIdle);
-    assert.equal(executions, 2);
-    assert.equal(
-      host.session.agent.state.messages
-        .filter((m) => m.role === "toolResult" && m.toolName === "subagent")
-        .at(-1).isError,
-      true,
-    );
-    assert.deepEqual(host.errors, []);
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result.content), /Independent host permission policy/);
   } finally {
-    await host.close();
-    await worker.close();
+    await b.close();
+    await a.close();
   }
 });

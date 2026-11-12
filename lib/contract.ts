@@ -1,3 +1,5 @@
+import { isRecord, isSafeInteger } from "./validation.ts";
+
 // Thin Host EventBus contract. No tool execution, persistence, mapping, or retries.
 export const CAPABILITY = "cancel-safe-queue-v1";
 export const RPC_SEND = "cross-session:rpc:send";
@@ -53,28 +55,31 @@ export const validInstance = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
 export function bridgeEnvelope(text: string): BridgeEnvelope | undefined {
   if (!text.startsWith(BRIDGE_PREFIX)) return undefined;
-  const v = JSON.parse(text.slice(BRIDGE_PREFIX.length));
+  const v: unknown = JSON.parse(text.slice(BRIDGE_PREFIX.length));
   if (
-    !v ||
+    !isRecord(v) ||
     v.version !== 1 ||
     !validId(v.origin) ||
     !validId(v.correlationId) ||
-    !Number.isSafeInteger(v.expiresAt) ||
-    v.expiresAt <= Date.now() ||
-    v.expiresAt > Date.now() + 30_000 ||
-    !Number.isInteger(v.hops) ||
-    v.hops < 0 ||
-    v.hops > 4 ||
-    !Number.isInteger(v.budget) ||
-    v.budget < 1 ||
-    v.budget > 256 ||
+    !isSafeInteger(v.expiresAt, Date.now() + 1, Date.now() + 30_000) ||
+    !isSafeInteger(v.hops, 0, 4) ||
+    !isSafeInteger(v.budget, 1, 256) ||
     !("payload" in v)
   ) {
     throw new Error(
       "Invalid/expired bridge envelope; refresh mapping, TTL, hop and budget at the Host",
     );
   }
-  return v;
+  return {
+    ...v,
+    version: v.version,
+    origin: v.origin,
+    correlationId: v.correlationId,
+    expiresAt: v.expiresAt,
+    hops: v.hops,
+    budget: v.budget,
+    payload: v.payload,
+  };
 }
 // Callers subscribe before emitting. Missing listener/default-off -> bounded timeout.
 // Cancel only stops waiting; it cannot retract a remote admission. Never retry blindly.
@@ -118,8 +123,8 @@ export function requestRpc(
     );
     try {
       unsubscribe = bus.on(`${topic}:reply:${request.requestId}`, (data) => {
-        const reply = data as { version?: unknown; requestId?: unknown } | null;
-        if (reply?.version === 1 && reply.requestId === request.requestId) finish(undefined, data);
+        if (isRecord(data) && data.version === 1 && data.requestId === request.requestId)
+          finish(undefined, data);
       });
     } catch (error) {
       finish(error instanceof Error ? error : new Error(String(error)));

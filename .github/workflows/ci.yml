@@ -32,6 +32,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: ${{ matrix.node }}
@@ -40,6 +41,7 @@ jobs:
       - name: Select compatibility SDK without modifying the lockfile
         if: matrix.pi != '0.84.4'
         run: npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@${{ matrix.pi }} @earendil-works/pi-tui@${{ matrix.pi }}
+      - run: ./test/run-clean.sh run fork:check
       - run: ./test/run-clean.sh run format:check
       - run: ./test/run-clean.sh run typecheck
       - run: ./test/run-clean.sh test

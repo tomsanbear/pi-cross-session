@@ -1,4 +1,5 @@
-import { validId } from "./contract";
+import { validId } from "./contract.ts";
+import { isRecord } from "./validation.ts";
 
 // pi-subagents' public tool contract, not its private runtime internals.
 // Unknown actions/options fail closed until their authority is reviewed.
@@ -101,16 +102,15 @@ export function allowsSubagent(input: Input, owns: (id: string) => boolean): boo
 }
 
 export function subagentRunIds(details: unknown): string[] {
-  if (!details || typeof details !== "object") return [];
-  const result = details as { runId?: unknown; asyncId?: unknown };
-  return [...new Set([result.runId, result.asyncId].filter(validId))];
+  if (!isRecord(details)) return [];
+  return [...new Set([details.runId, details.asyncId].filter(validId))];
 }
 
 export function subagentNotificationIds(details: unknown): string[] {
-  const runs = (details as { runs?: unknown } | undefined)?.runs;
-  if (!Array.isArray(runs)) return [];
+  if (!isRecord(details) || !Array.isArray(details.runs)) return [];
+  const runs: unknown[] = details.runs;
   return runs.flatMap((run) => {
-    if (!run || typeof run !== "object") return [];
+    if (!isRecord(run)) return [];
     return [run.id, run.runId].filter(validId);
   });
 }

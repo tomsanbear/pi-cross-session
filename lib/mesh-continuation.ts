@@ -1,6 +1,8 @@
 // Trusted in-process EventBus protocol, not a wire/RPC or customType authority.
 // No capabilities are persisted or exposed to the model. Mesh owns the fixed
 // plan and verifies the exact successful run epoch; Cross owns turn authority.
+import { isRecord, isSafeInteger } from "./validation.ts";
+
 export const MESH_CONTINUATION = "pi-mesh:continuation:issue:v1";
 const TTL = 60 * 60 * 1000;
 const LIMIT = 16;
@@ -22,7 +24,10 @@ export class MeshContinuations {
   private generation = 0;
   private issued = 0;
   private turn = 0;
-  private calls = new Map<string, { input: string; scope: Scope }>();
+  private calls = new Map<
+    string,
+    { input: string; scope: Scope; adaptive: boolean; remaining: number }
+  >();
   private deliveries = new WeakMap<object, Grant[]>();
   private active: Grant[] = [];
   revoke(): void {
@@ -38,31 +43,41 @@ export class MeshContinuations {
     this.calls.clear();
   }
   note(callId: string, input: Record<string, unknown>, scope: Scope): void {
-    const adaptive = input.autoContinuation;
     if (
       typeof callId !== "string" ||
       !callId ||
       input.action !== "run" ||
       input.async === false ||
-      this.calls.size >= LIMIT ||
-      !(
-        (Array.isArray(input.continuationTasks) && input.continuationTasks.length && !adaptive) ||
-        (adaptive &&
-          !input.continuationTasks &&
-          typeof adaptive === "object" &&
-          ((adaptive as any).maxRuns === undefined ||
-            (Number.isInteger((adaptive as any).maxRuns) && (adaptive as any).maxRuns >= 1)) &&
-          Array.isArray(input.tasks) &&
-          input.tasks.length === 1 &&
-          typeof (input.tasks[0] as any)?.task === "string" &&
-          (input.tasks[0] as any).task.length <= 8192)
-      )
+      this.calls.size >= LIMIT
     )
       return;
-    this.calls.set(callId, { input: JSON.stringify(input), scope: { ...scope } });
+    const adaptive = input.autoContinuation;
+    const fixed =
+      Array.isArray(input.continuationTasks) && input.continuationTasks.length > 0 && !adaptive;
+    let remaining = 1;
+    if (!fixed) {
+      if (
+        !isRecord(adaptive) ||
+        input.continuationTasks ||
+        !Array.isArray(input.tasks) ||
+        input.tasks.length !== 1
+      )
+        return;
+      const task: unknown = input.tasks[0];
+      if (!isRecord(task) || typeof task.task !== "string" || task.task.length > 8192) return;
+      if (adaptive.maxRuns !== undefined && !isSafeInteger(adaptive.maxRuns, 1)) return;
+      remaining = adaptive.maxRuns ?? Infinity;
+    }
+    this.calls.set(callId, {
+      input: JSON.stringify(input),
+      scope: { ...scope },
+      adaptive: !fixed,
+      remaining,
+    });
   }
-  issue(request: any): void {
-    const call = this.calls.get(request?.callId);
+  issue(request: unknown): void {
+    if (!isRecord(request) || typeof request.callId !== "string") return;
+    const call = this.calls.get(request.callId);
     if (!call) return;
     this.calls.delete(request.callId);
     if (
@@ -75,11 +90,10 @@ export class MeshContinuations {
     )
       return;
     this.issued++;
-    const requested = JSON.parse(call.input);
-    const adaptive = !!requested.autoContinuation;
+    const adaptive = call.adaptive;
     const generation = this.generation,
       expires = adaptive ? Infinity : Date.now() + TTL;
-    let remaining = adaptive ? (requested.autoContinuation.maxRuns ?? Infinity) : 1;
+    let remaining = call.remaining;
     let delivered = false,
       used = false,
       execution: string | undefined,

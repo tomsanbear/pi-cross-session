@@ -6,7 +6,7 @@ import net from "node:net";
 import { syncBuiltinESMExports } from "node:module";
 import { randomUUID } from "node:crypto";
 import { component, wire, message, hello, info } from "./support/component.mjs";
-import { registrations, runtimeDir, until, sleep, hold } from "./support/sdk.mjs";
+import { runtimeDir, until, sleep, hold } from "./support/sdk.mjs";
 // Patch BEFORE the first loader/jiti evaluation; hit assertions below are mandatory.
 const originalStat = fsp.lstat,
   originalWrite = fsp.writeFile;
@@ -43,7 +43,7 @@ for (const fault of [
     let hits = 0,
       subscriptions = 0,
       b;
-    writeHook = async (file, data) => {
+    writeHook = async (_file, data) => {
       if (fault.startsWith("write") && String(data).includes("fault-host")) {
         hits++;
         throw Error("fixture start I/O failure");
@@ -154,7 +154,7 @@ test("review dedup: sender-qualified A/B/A across settled, same ID tombstones an
   }
 });
 
-async function fakePeer(a, b, handle, fn) {
+async function fakePeer(b, handle, fn) {
   await b.emit("session_shutdown");
   const registration = process.env.PI_CODING_AGENT_DIR + "/peers/" + b.peer.instanceId + ".json";
   fs.writeFileSync(registration, JSON.stringify(b.peer), { mode: 0o600 });
@@ -210,7 +210,6 @@ for (const bad of ["wrong-id", "old-hello", "invalid-metadata"])
       b = await component("receipt-b");
     try {
       await fakePeer(
-        a,
         b,
         (s, f, helloId) =>
           s.write(
@@ -269,7 +268,6 @@ test(
       entered = false;
     try {
       await fakePeer(
-        a,
         b,
         (s) => s.destroy(),
         async (counts) => {
@@ -350,7 +348,6 @@ test("outgoing tool abort after transmission returns receipt_unknown, never retr
   const controller = new AbortController();
   try {
     await fakePeer(
-      a,
       b,
       () => controller.abort(),
       async (counts) => {
@@ -377,7 +374,7 @@ test("outgoing tool abort after transmission returns receipt_unknown, never retr
   }
 });
 
-async function pipeline(a, b, bytes, split, warmup = 0) {
+async function pipeline(b, bytes, split, warmup = 0) {
   const s = net.createConnection({ path: b.peer.socketPath }),
     replies = [];
   let buffer = "";
@@ -463,7 +460,6 @@ for (const scenario of [
             ])
           : Buffer.concat([prefix, h, Buffer.from("\n" + JSON.stringify(m) + "\n"), tail]);
       const replies = await pipeline(
-        a,
         b,
         bytes,
         split,

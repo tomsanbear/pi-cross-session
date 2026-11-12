@@ -4,6 +4,8 @@ Same-machine messaging between independent [Pi](https://github.com/earendil-work
 
 This is [tomsanbear's fork](https://github.com/tomsanbear/pi-cross-session) of [gcoder1991/pi-cross-session](https://github.com/gcoder1991/pi-cross-session), based on v2.4.0. The upstream npm package does **not** contain these changes. This fork is Git-installable and marked private to prevent accidental npm publication.
 
+For the complete fork delta and maintenance requirements, start with [FORK.md](FORK.md); detailed history and verification live under `.fork/`.
+
 ## Install
 
 Requires Node **22.19+**. Tested with Pi **0.84.4 and 1.5.2** on macOS and Linux; native Windows remains unverified.
@@ -28,14 +30,14 @@ Name each independent session with `/name backend`, `/name frontend`, etc. Then 
 
 Pi uses `list_pi` to find the exact session and `send_pi_message` to send plain text. Type `@` in the TUI to select an explicit `@name [ref]` target. Names may collide; runtime IDs and name/ref pairs disambiguate them.
 
-| Entry point | Purpose |
-| --- | --- |
-| `/peers`, `/list-pi`, `list_pi` | List live sessions, busy/idle state, cwd, Git worktree/branch/HEAD and addressing metadata |
-| `send_pi_message` | Send to a name, session ID, runtime ID, or `name [ref]`; optional receiver-issued `goalId` |
-| `get_pi_message_status` | Query the exact receiver runtime and message ID returned by a send; never resend |
-| `peer_goal` | Start, bind, inspect, complete or cancel one locally authorized collaboration goal |
-| `/cross-session-status` | Local queue, receipt and remaining-budget diagnostics |
-| `/cross-session-resume` | Explicitly reopen reception after cancellation; never replay dropped messages |
+| Entry point                      | Purpose                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `/peers`, `/list-pi`, `list_pi`  | List live sessions, busy/idle state, cwd, Git worktree/branch/HEAD and addressing metadata      |
+| `send_pi_message`                | Send to a name, session ID, runtime ID, or `name [ref]`; optional receiver-issued `goalId`      |
+| `get_pi_message_status`          | Query the exact receiver runtime and message ID returned by a send; never resend                |
+| `peer_goal`                      | Start, bind, inspect, complete or cancel one locally authorized collaboration goal              |
+| `/cross-session-status`          | Local queue, receipt and remaining-budget diagnostics                                           |
+| `/cross-session-resume`          | Explicitly reopen reception after cancellation; never replay dropped messages                   |
 | `/cross-session-budget <1–4096>` | Set remaining unscoped message allowance while idle; does not reopen reception or restore goals |
 
 A message to an idle receiver can start a model turn. A message to a busy receiver stays in this extension's memory queue, **not** Pi's steering queue. After a confirmed successful settlement, the receiver submits one queued message at a time. Preflight/unknown busy states refuse admission rather than guessing.
@@ -53,14 +55,14 @@ Outgoing tool cancellation now reaches discovery and socket exchange. Cancellati
 
 ## Configuration and recovery
 
-| CLI flag | Default | Behavior |
-| --- | --- | --- |
-| `--cross-session-inbound=accept\|refuse` | `accept` | Invalid values refuse inbound messages |
-| `--cross-session-guard` | **enabled** | Gate known delegation/configuration tools in unscoped peer turns; retained for upstream compatibility |
-| `--cross-session-unsafe-peer-tools` | `false` | Explicitly restore upstream's permissive unscoped peer tools; not recommended |
-| `--cross-session-queue-ttl-seconds=600` | **600** | Busy queue retention, integer **30–3600 seconds**; invalid configuration disables registration |
-| `--cross-session-auto-resume` | `false` | Reopen reception only after the next clean genuine local-user turn |
-| `--cross-session-rpc` | `false` | Enable trusted Host EventBus send/info/received contracts |
+| CLI flag                                 | Default     | Behavior                                                                                              |
+| ---------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| `--cross-session-inbound=accept\|refuse` | `accept`    | Invalid values refuse inbound messages                                                                |
+| `--cross-session-guard`                  | **enabled** | Gate known delegation/configuration tools in unscoped peer turns; retained for upstream compatibility |
+| `--cross-session-unsafe-peer-tools`      | `false`     | Explicitly restore upstream's permissive unscoped peer tools; not recommended                         |
+| `--cross-session-queue-ttl-seconds=600`  | **600**     | Busy queue retention, integer **30–3600 seconds**; invalid configuration disables registration        |
+| `--cross-session-auto-resume`            | `false`     | Reopen reception only after the next clean genuine local-user turn                                    |
+| `--cross-session-rpc`                    | `false`     | Enable trusted Host EventBus send/info/received contracts                                             |
 
 Pi's boolean extension flags are presence switches: `--flag=false` is not a reliable way to disable them on supported SDKs. Use the explicit unsafe flag only if you deliberately want that behavior. `/cross-session-status` reports the effective guard, queue retention and auto-resume settings.
 
@@ -123,6 +125,7 @@ npm ci --ignore-scripts
 ./test/run-clean.sh test
 ./test/run-clean.sh run smoke
 ./test/run-clean.sh run format:check
+./test/run-clean.sh run fork:check
 ```
 
 The runner discovers Node/npm instead of hardcoding an author's installation. `CROSS_TEST_NODE=/absolute/path/to/node` selects another Node. Tests run under a private HOME/agent directory with model/network access blocked; do not bypass the wrapper for SDK tests. Fixtures resolve the SDK's actual pi-ai dependency rather than assuming a nested npm layout.
@@ -136,6 +139,8 @@ Source responsibilities:
 - `lib/peer-goal.ts`: ephemeral grants and journal-backed task ownership/revocation.
 - `lib/mesh-continuation.ts`: upstream trusted Mesh continuation permits.
 - `extensions/cross-session.ts`: discovery, sockets, admission, SDK lifecycle and UI integration.
+
+Typechecking enforces strict optional/indexed access, unused-code and control-flow checks across all production TypeScript. Source tests reject explicit `any`, non-null assertions and TypeScript suppression directives. JSON/EventBus/history boundaries are validated before use. Fork-record checks require Git history through the baseline in `FORK.md` and cover every changed path, including uncommitted work.
 
 Formatting uses Prettier (development-only); no runtime dependency was added. Native Windows verification, durable offline delivery and automatic message retry are not provided.
 

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { requestRpc, RPC_INFO, RPC_SEND, BRIDGE_PREFIX } from "../lib/contract.ts";
 import { component, wire, message, info } from "./support/component.mjs";
-import { make, send, until, sleep, registrations } from "./support/sdk.mjs";
+import { make, until, sleep, registrations } from "./support/sdk.mjs";
 
 test("component: default Host-only identity; same PID Host unaffected; RPC default-off / no listener timeout / unsubscribe", async () => {
   const child = await component("managed", { managed: true, rpc: true }),

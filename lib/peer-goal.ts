@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { validId } from "./contract";
-import { allowsSubagent, subagentNotificationIds, subagentRunIds } from "./subagents";
+import { validId } from "./contract.ts";
+import { allowsSubagent, subagentNotificationIds, subagentRunIds } from "./subagents.ts";
+import { isRecord } from "./validation.ts";
 
 export const GOAL_ENTRY = "cross-session:goal-ownership:v1";
 type Scope = { sessionId: string; instanceId: string; cwd: string };
@@ -23,15 +24,28 @@ export type PeerGoal = {
 };
 
 function resultIds(tool: string, details: unknown): Partial<Record<TaskKind, string[]>> {
-  const result = details as { run?: { id?: unknown }; agentId?: unknown } | undefined;
-  if (tool === "mesh" && validId(result?.run?.id)) return { mesh: [result.run.id] };
-  if (tool === "Agent" && validId(result?.agentId)) return { agent: [result.agentId] };
+  if (!isRecord(details)) return {};
+  if (tool === "mesh" && isRecord(details.run) && validId(details.run.id))
+    return { mesh: [details.run.id] };
+  if (tool === "Agent" && validId(details.agentId)) return { agent: [details.agentId] };
   if (tool === "subagent") return { subagent: subagentRunIds(details) };
   return {};
 }
 
+function isOwnership(value: unknown): value is Ownership {
+  return (
+    isRecord(value) &&
+    validId(value.goalId) &&
+    (value.callId === undefined || typeof value.callId === "string") &&
+    (value.tool === undefined || typeof value.tool === "string") &&
+    [value.runs, value.agents, value.subagentRuns].every(
+      (ids) => ids === undefined || (Array.isArray(ids) && ids.every(validId)),
+    )
+  );
+}
+
 export class PeerGoals {
-  current?: PeerGoal;
+  current: PeerGoal | undefined;
 
   constructor(
     private readonly entries: () => SessionEntry[],
@@ -84,8 +98,20 @@ export class PeerGoals {
 
   private ownership(entry: SessionEntry): Ownership | undefined {
     if (entry.type !== "custom" || entry.customType !== GOAL_ENTRY) return;
-    const data = entry.data as Ownership | undefined;
-    return validId(data?.goalId) ? data : undefined;
+    const data: unknown = entry.data;
+    if (isOwnership(data)) return data;
+    if (!isRecord(data) || !validId(data.goalId)) return undefined;
+    // Corrupt unrelated fields must not erase valid negative ownership evidence.
+    // Recover only exact valid IDs; never restore a grant from journal data.
+    const ids = (value: unknown): string[] => (Array.isArray(value) ? value.filter(validId) : []);
+    return {
+      goalId: data.goalId,
+      ...(typeof data.callId === "string" && { callId: data.callId }),
+      ...(typeof data.tool === "string" && { tool: data.tool }),
+      runs: ids(data.runs),
+      agents: ids(data.agents),
+      subagentRuns: ids(data.subagentRuns),
+    };
   }
 
   private call(callId: string, tool: string): Ownership | undefined {
@@ -93,6 +119,7 @@ export class PeerGoals {
       const data = this.ownership(entry);
       if (data?.callId === callId && data.tool === tool) return data;
     }
+    return undefined;
   }
 
   note(goal: PeerGoal, tool: string, callId: string): void {
@@ -117,6 +144,7 @@ export class PeerGoals {
         if (call) return call.goalId;
       }
     }
+    return undefined;
   }
 
   bindTasks(
@@ -151,7 +179,7 @@ export class PeerGoals {
 
   notifications(details: unknown): string[] {
     const goals = new Set<string>();
-    const ids = (details as { ids?: unknown } | undefined)?.ids;
+    const ids = isRecord(details) ? details.ids : undefined;
     if (Array.isArray(ids)) {
       for (const id of ids) {
         if (typeof id !== "string") continue;

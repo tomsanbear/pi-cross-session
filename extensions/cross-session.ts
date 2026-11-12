@@ -19,13 +19,14 @@ import {
   bridgeEnvelope,
   validId,
   validInstance,
-  type SendRequest,
-} from "../lib/contract";
+} from "../lib/contract.ts";
 
-import { MESH_CONTINUATION, MeshContinuations } from "../lib/mesh-continuation";
-import { GOAL_ENTRY, PeerGoals } from "../lib/peer-goal";
-import { socketPathFor as ipcSocketPathFor } from "../lib/ipc-path";
-import { subagentCreatesTask, subagentReadOnly } from "../lib/subagents";
+import { MESH_CONTINUATION, MeshContinuations } from "../lib/mesh-continuation.ts";
+import { GOAL_ENTRY, PeerGoals } from "../lib/peer-goal.ts";
+import { socketPathFor as ipcSocketPathFor } from "../lib/ipc-path.ts";
+import { subagentCreatesTask, subagentReadOnly } from "../lib/subagents.ts";
+import { trimOldest } from "../lib/collections.ts";
+import { isRecord, isSafeInteger } from "../lib/validation.ts";
 import {
   WIRE_VERSION,
   MAX_FRAME_BYTES,
@@ -40,7 +41,7 @@ import {
   type MessageFrame,
   type StatusFrame,
   type ResponseFrame,
-} from "../lib/protocol";
+} from "../lib/protocol.ts";
 
 const REGISTRATION_VERSION = 2;
 const GOAL_CAPABILITY = "goal-scoped-peer-v1";
@@ -100,6 +101,32 @@ type IncomingDetails = {
   goalId?: string;
 };
 
+type DisplayDetails = Pick<IncomingDetails, "text" | "summary"> & {
+  from: Pick<PublicPeer, "name" | "id" | "ref">;
+};
+function isDisplayDetails(value: unknown): value is DisplayDetails {
+  return (
+    isRecord(value) &&
+    isRecord(value.from) &&
+    typeof value.text === "string" &&
+    typeof value.summary === "string" &&
+    typeof value.from.name === "string" &&
+    typeof value.from.id === "string" &&
+    typeof value.from.ref === "string"
+  );
+}
+function incomingMessageKey(value: unknown): string | undefined {
+  return isRecord(value) &&
+    isRecord(value.from) &&
+    validInstance(value.from.instanceId) &&
+    validId(value.messageId)
+    ? `${value.from.instanceId}:${value.messageId}`
+    : undefined;
+}
+function errorCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+}
+
 type SenderState = {
   tokens: number;
   updatedAt: number;
@@ -107,7 +134,7 @@ type SenderState = {
 
 type Admission =
   | { admitted: false; reason: "duplicate" | "rate_limited" }
-  | { admitted: true; commit: () => void; rollback: () => void };
+  | { admitted: true; commit: () => void };
 
 function socketPathFor(instanceId: string) {
   return ipcSocketPathFor(process.platform, runtimeDir, runtimeNamespace, instanceId);
@@ -123,7 +150,7 @@ function alive(pid: number) {
     return true;
   } catch (error) {
     // Only ESRCH proves death; permission/unknown failures must not reap.
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    return errorCode(error) !== "ESRCH";
   }
 }
 
@@ -209,8 +236,8 @@ async function ensurePrivateDir(path: string) {
 }
 
 function validPeer(value: unknown, expectedInstance?: string): value is Peer {
-  if (!value || typeof value !== "object") return false;
-  const peer = value as Partial<Peer>;
+  if (!isRecord(value)) return false;
+  const peer = value;
   return (
     peer.version === REGISTRATION_VERSION &&
     peer.protocol === WIRE_VERSION &&
@@ -225,9 +252,7 @@ function validPeer(value: unknown, expectedInstance?: string): value is Peer {
     codePointLength(peer.name) <= 200 &&
     typeof peer.cwd === "string" &&
     peer.cwd.length <= 32_768 &&
-    Number.isInteger(peer.pid) &&
-    (peer.pid ?? 0) > 0 &&
-    (peer.pid ?? 0) <= 2_147_483_647 &&
+    isSafeInteger(peer.pid, 1, 2_147_483_647) &&
     typeof peer.startedAt === "number" &&
     Number.isFinite(peer.startedAt) &&
     typeof peer.updatedAt === "number" &&
@@ -250,7 +275,7 @@ async function readPeer(instanceId: string): Promise<Peer | null> {
       const uid = process.getuid?.();
       if ((uid !== undefined && info.uid !== uid) || (info.mode & 0o077) !== 0) return null;
     }
-    const value = JSON.parse(await readFile(path, "utf8"));
+    const value: unknown = JSON.parse(await readFile(path, "utf8"));
     return validPeer(value, instanceId) ? value : null;
   } catch {
     return null;
@@ -276,7 +301,7 @@ async function vetSocket(peer: Peer) {
     info = await lstat(peer.socketPath);
   } catch (error) {
     throw new DeliveryError(
-      (error as NodeJS.ErrnoException).code ?? "missing_endpoint",
+      errorCode(error) ?? "missing_endpoint",
       "Peer inbox socket is unavailable",
     );
   }
@@ -330,7 +355,7 @@ async function exchange(
       socket?.destroy();
       resolve(response);
     };
-    const handle = (value: unknown) => {
+    const handle = (value: unknown, connection: Socket) => {
       if (performance.now() >= expiresAt) return timeout();
       if (!isResponse(value))
         return fail(new DeliveryError("invalid_response", "Peer returned an invalid response"));
@@ -381,7 +406,7 @@ async function exchange(
             ),
           );
         phase = "message";
-        socket!.write(messageLine);
+        connection.write(messageLine);
         return;
       }
       if (
@@ -423,13 +448,14 @@ async function exchange(
           timeout();
           return;
         }
-        socket = createConnection({ path: peer.socketPath });
-        socket.on("connect", () => {
+        const connection = createConnection({ path: peer.socketPath });
+        socket = connection;
+        connection.on("connect", () => {
           if (performance.now() >= expiresAt) timeout();
-          else if (!settled) socket!.write(helloLine);
+          else if (!settled) connection.write(helloLine);
         });
         let lines = 0;
-        socket.on(
+        connection.on(
           "data",
           frameReader(
             (line) => {
@@ -439,7 +465,8 @@ async function exchange(
                 return false;
               }
               try {
-                handle(JSON.parse(line));
+                const value: unknown = JSON.parse(line);
+                handle(value, connection);
               } catch {
                 fail(new DeliveryError("invalid_response", "Peer returned invalid JSON"));
               }
@@ -608,6 +635,7 @@ export default function (pi: ExtensionAPI) {
     const i = pending.findIndex((entry) => entry.key === key);
     if (i < 0) return;
     const [entry] = pending.splice(i, 1);
+    if (!entry) return;
     clearTimeout(entry.timer);
     status(key, reason);
   }
@@ -739,8 +767,9 @@ export default function (pi: ExtensionAPI) {
     if (pi.getFlag("cross-session-rpc") !== true) return;
     rpcUnsubscribers.push(
       pi.events.on(RPC_INFO, (data) => {
-        const value = data as { version?: unknown; requestId?: unknown } | null;
-        if (value?.version !== 1 || !validId(value.requestId)) return;
+        if (!isRecord(data)) return;
+        const value = data;
+        if (value.version !== 1 || !validId(value.requestId)) return;
         pi.events.emit(`${RPC_INFO}:reply:${value.requestId}`, {
           version: 1,
           requestId: value.requestId,
@@ -756,8 +785,9 @@ export default function (pi: ExtensionAPI) {
     );
     rpcUnsubscribers.push(
       pi.events.on(RPC_SEND, (data) => {
-        const value = data as Partial<SendRequest> | null;
-        if (!validId(value?.requestId)) return; // Cannot safely construct a reply topic.
+        if (!isRecord(data)) return;
+        const value = data;
+        if (!validId(value.requestId)) return; // Cannot safely construct a reply topic.
         const requestId = value.requestId;
         // One requestId -> at most one reply/send per incarnation, including in-flight duplicates.
         if (rpcRequests.has(requestId)) return;
@@ -797,11 +827,13 @@ export default function (pi: ExtensionAPI) {
           value.version !== 1 ||
           !current ||
           shuttingDown ||
-          value.local?.sessionId !== current.id ||
-          value.local?.instanceId !== current.instanceId ||
+          !isRecord(value.local) ||
+          value.local.sessionId !== current.id ||
+          value.local.instanceId !== current.instanceId ||
           !validInstance(value.remoteInstanceId) ||
           !validId(value.messageId) ||
-          typeof value.text !== "string"
+          typeof value.text !== "string" ||
+          (value.summary !== undefined && typeof value.summary !== "string")
         ) {
           reply({
             ok: false,
@@ -910,16 +942,11 @@ export default function (pi: ExtensionAPI) {
         settled = true;
         seenMessageIds.set(messageKey, now);
         seenTexts.set(textKey, now);
-        while (seenMessageIds.size > MAX_SEEN_MESSAGES)
-          seenMessageIds.delete(seenMessageIds.keys().next().value!);
-        while (seenTexts.size > MAX_SEEN_MESSAGES) seenTexts.delete(seenTexts.keys().next().value!);
+        trimOldest(seenMessageIds, MAX_SEEN_MESSAGES);
+        trimOldest(seenTexts, MAX_SEEN_MESSAGES);
         senderStates.delete(key);
         senderStates.set(key, { tokens: tokens - 1, updatedAt: now });
-        while (senderStates.size > MAX_TRACKED_SENDERS)
-          senderStates.delete(senderStates.keys().next().value!);
-      },
-      rollback: () => {
-        settled = true;
+        trimOldest(senderStates, MAX_TRACKED_SENDERS);
       },
     };
   }
@@ -1029,12 +1056,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const query = value as {
-        v?: number;
-        type?: string;
-        requestId?: string;
-        messageId?: string;
-      } | null;
+      const query = isRecord(value) ? value : undefined;
       if (
         sender &&
         query?.v === 1 &&
@@ -1191,7 +1213,8 @@ export default function (pi: ExtensionAPI) {
                 !safeQueue ||
                 !receiving ||
                 handled ||
-                (result as { handled?: unknown })?.handled !== true
+                !isRecord(result) ||
+                result.handled !== true
               )
                 return false;
               handled = true;
@@ -1296,25 +1319,26 @@ export default function (pi: ExtensionAPI) {
     if (!current) throw new Error("Cross-session registration is not initialized");
     const socketPath = current.socketPath;
     if (process.platform !== "win32") await rm(socketPath, { force: true });
-    server = createServer(handleConnection);
+    const active = createServer(handleConnection);
+    server = active;
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => reject(error);
-      server!.once("error", onError);
-      server!.listen(socketPath, () => {
-        server!.off("error", onError);
+      active.once("error", onError);
+      active.listen(socketPath, () => {
+        active.off("error", onError);
         resolve();
       });
     });
-    server.on("error", (error) => {
+    active.on("error", (error) => {
       try {
         currentCtx?.ui.notify(`Cross-session inbox error: ${error.message}`, "error");
       } catch {
         /* best effort */
       }
     });
-    server.unref();
+    active.unref();
     if (process.platform !== "win32") await chmod(socketPath, 0o600);
-    // ponytail: no process.env endpoint export; concurrent SDK Hosts share it.
+    // No process.env endpoint export; concurrent SDK Hosts share it.
     // Add per-session child-process injection when the SDK provides that scope.
   }
 
@@ -1407,14 +1431,18 @@ export default function (pi: ExtensionAPI) {
     const namedRef = /^(.*\S)\s+\[([0-9a-f]{6,32})\]$/.exec(trimmed);
     if (!trimmed) throw new DeliveryError("invalid_target", "Target must not be empty");
     const matches = peers.filter((peer) => {
-      if (namedRef) return peer.name === namedRef[1] && peer.instanceId.startsWith(namedRef[2]);
+      if (namedRef) {
+        const [, name, ref] = namedRef;
+        return ref !== undefined && peer.name === name && peer.instanceId.startsWith(ref);
+      }
       if (validInstance(trimmed)) return peer.instanceId === trimmed;
       const runtimeRef = /^[0-9a-f]{6,32}$/.test(trimmed) && peer.instanceId.startsWith(trimmed);
       return (
         peer.name === trimmed || peer.id === trimmed || peer.instanceId === trimmed || runtimeRef
       );
     });
-    if (matches.length === 0)
+    const peer = matches[0];
+    if (!peer)
       throw new DeliveryError("not_found", `No live Pi session named or identified by: ${target}`);
     if (matches.length > 1)
       throw new DeliveryError(
@@ -1424,7 +1452,6 @@ export default function (pi: ExtensionAPI) {
 
     if (shuttingDown || current?.instanceId !== incarnation || sendingSignal.aborted)
       throw new DeliveryError("not_ready", "Local incarnation changed/cancelled before send");
-    const peer = matches[0];
     const goalSendKey = `${peer.instanceId}:${goalId}`;
     if (budget <= 0 && (!goalId || !confirmedGoalSends.has(goalSendKey)))
       throw new DeliveryError(
@@ -1457,8 +1484,7 @@ export default function (pi: ExtensionAPI) {
         if (charged) budget++;
         updateInboxStatus();
         confirmedGoalSends.add(goalSendKey);
-        while (confirmedGoalSends.size > 64)
-          confirmedGoalSends.delete(confirmedGoalSends.values().next().value!);
+        trimOldest(confirmedGoalSends, 64);
       }
       return { peer, receipt, messageId: frame.messageId };
     } catch (error) {
@@ -1490,7 +1516,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.registerMessageRenderer("cross-session", (message, { expanded, outputPad }, theme) => {
-    const details = message.details as IncomingDetails | undefined;
+    const details = isDisplayDetails(message.details) ? message.details : undefined;
     const sender = cleanName(details?.from.name);
     const content = typeof message.content === "string" ? message.content : "Cross-session message";
     const preview = details?.summary || cleanLine(content.split(/\r?\n/, 2)[1] || content, 200);
@@ -1757,22 +1783,22 @@ export default function (pi: ExtensionAPI) {
             )
               throw new Error("bind requires peers or task handles");
             const peers = params.peerIds ? await livePeers() : [];
-            const selected = (params.peerIds ?? []).map((id) =>
-              peers.find((peer) => peer.instanceId === id),
-            );
-            if (selected.some((peer) => !peer))
-              throw new Error("Every peerId must name an exact live runtime");
+            const selected = (params.peerIds ?? []).map((id) => {
+              const peer = peers.find((candidate) => candidate.instanceId === id);
+              if (!peer) throw new Error("Every peerId must name an exact live runtime");
+              return peer;
+            });
             if (!local() || !goals.valid(previous, goalScope(ctx)))
               throw new Error("Goal binding revoked while resolving peers");
             if (
-              new Set([...previous.peers.keys(), ...selected.map((peer) => peer!.instanceId)])
-                .size > 64
+              new Set([...previous.peers.keys(), ...selected.map((peer) => peer.instanceId)]).size >
+              64
             )
               throw new Error(
                 "A goal supports at most 64 concurrently bound peers; unbind unused peers first",
               );
             goals.bindTasks(previous.id, params.runIds, params.agentIds, params.subagentRunIds);
-            for (const peer of selected) previous.peers.set(peer!.instanceId, peer!.id);
+            for (const peer of selected) previous.peers.set(peer.instanceId, peer.id);
           } else if (params.action === "unbind") {
             if (
               !params.peerIds?.length ||
@@ -1860,10 +1886,10 @@ export default function (pi: ExtensionAPI) {
             reply: (identity: unknown) => {
               if (
                 querying &&
-                identity &&
+                isRecord(identity) &&
                 Object.isFrozen(identity) &&
-                (identity as { version?: number }).version === 1 &&
-                (identity as { managed?: boolean }).managed === true
+                identity.version === 1 &&
+                identity.managed === true
               )
                 managed = true;
             },
@@ -1905,7 +1931,7 @@ export default function (pi: ExtensionAPI) {
                   const beforeCursor = (lines[cursorLine] ?? "").slice(0, cursorCol);
                   const match = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
                   if (!match) return fallback.getSuggestions(lines, cursorLine, cursorCol, options);
-                  const query = match[1].toLowerCase();
+                  const query = (match[1] ?? "").toLowerCase();
                   const peers = (await livePeers()).filter(
                     (peer) =>
                       peer.name.toLowerCase().includes(query) ||
@@ -2085,8 +2111,7 @@ export default function (pi: ExtensionAPI) {
       submittedKey &&
       message.role === "custom" &&
       message.customType === "cross-session" &&
-      `${(message.details as IncomingDetails | undefined)?.from?.instanceId}:${(message.details as IncomingDetails | undefined)?.messageId}` ===
-        submittedKey
+      incomingMessageKey(message.details) === submittedKey
     ) {
       status(submittedKey, "submitted", "SDK message_end observed; not business completion");
       clearTimeout(submissionTimer);
@@ -2140,7 +2165,8 @@ export default function (pi: ExtensionAPI) {
         if (epoch !== settledEpoch || stopped || shuttingDown || phase !== "idle" || !ctx.isIdle())
           return;
         while (pending.length) {
-          const entry = pending.shift()!;
+          const entry = pending.shift();
+          if (!entry) break;
           clearTimeout(entry.timer);
           if (entry.expiresAt <= Date.now()) {
             status(entry.key, "expired");

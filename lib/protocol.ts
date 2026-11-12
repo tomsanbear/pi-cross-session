@@ -1,5 +1,6 @@
 import { TextDecoder } from "node:util";
-import { validId, validInstance } from "./contract";
+import { validId, validInstance } from "./contract.ts";
+import { isBoundedString, isRecord, isSafeInteger } from "./validation.ts";
 
 export const WIRE_VERSION = 1;
 export const MAX_FRAME_BYTES = 1_048_576;
@@ -133,46 +134,51 @@ function validCapabilities(value: unknown): boolean {
       value.every((item) => typeof item === "string" && item.length <= 64))
   );
 }
-function boundedString(value: unknown, max: number): value is string {
-  return typeof value === "string" && value.length <= max;
-}
 function sessionId(value: unknown): value is string {
-  return boundedString(value, 512) && value.length > 0;
+  return isBoundedString(value, 512, 1);
+}
+function responsePeer(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    sessionId(value.id) &&
+    validInstance(value.instanceId) &&
+    isSafeInteger(value.pid, 1, 2_147_483_647)
+  );
 }
 
 export function isResponse(value: unknown): value is ResponseFrame {
-  if (!value || typeof value !== "object") return false;
-  const frame = value as Partial<ResponseFrame>;
+  if (!isRecord(value)) return false;
+  const frame = value;
   return (
     frame.v === WIRE_VERSION &&
     frame.type === "response" &&
     validId(frame.requestId) &&
     typeof frame.ok === "boolean" &&
-    boundedString(frame.status, 64) &&
+    isBoundedString(frame.status, 64) &&
     validCapabilities(frame.capabilities) &&
-    [frame.code, frame.state].every((item) => item === undefined || boundedString(item, 64)) &&
-    (frame.next === undefined || boundedString(frame.next, 2048)) &&
-    (frame.error === undefined || boundedString(frame.error, 4096)) &&
+    [frame.code, frame.state].every((item) => item === undefined || isBoundedString(item, 64)) &&
+    (frame.next === undefined || isBoundedString(frame.next, 2048)) &&
+    (frame.error === undefined || isBoundedString(frame.error, 4096)) &&
     (frame.retryable === undefined || typeof frame.retryable === "boolean") &&
-    (frame.expiresAt === undefined ||
-      (Number.isSafeInteger(frame.expiresAt) && frame.expiresAt > 0))
+    (frame.expiresAt === undefined || isSafeInteger(frame.expiresAt, 1)) &&
+    (frame.peer === undefined || responsePeer(frame.peer))
   );
 }
 
 export function isHello(value: unknown): value is HelloFrame {
-  if (!value || typeof value !== "object") return false;
-  const frame = value as Partial<HelloFrame>;
+  if (!isRecord(value)) return false;
+  const frame = value;
   return (
     frame.v === WIRE_VERSION &&
     frame.type === "hello" &&
     validCapabilities(frame.capabilities) &&
     validId(frame.requestId) &&
     typeof frame.token === "string" &&
-    !!frame.target &&
+    isRecord(frame.target) &&
     sessionId(frame.target.id) &&
     validInstance(frame.target.instanceId) &&
     (frame.from === undefined ||
-      (!!frame.from &&
+      (isRecord(frame.from) &&
         sessionId(frame.from.id) &&
         validInstance(frame.from.instanceId) &&
         typeof frame.from.token === "string"))
@@ -180,20 +186,20 @@ export function isHello(value: unknown): value is HelloFrame {
 }
 
 export function isMessage(value: unknown): value is MessageFrame {
-  if (!value || typeof value !== "object") return false;
-  const frame = value as Partial<MessageFrame>;
+  if (!isRecord(value)) return false;
+  const frame = value;
   return (
     frame.v === WIRE_VERSION &&
     frame.type === "message" &&
     validId(frame.requestId) &&
     validId(frame.messageId) &&
-    boundedString(frame.text, MAX_MESSAGE_CHARS) &&
+    isBoundedString(frame.text, MAX_MESSAGE_CHARS) &&
     frame.text.isWellFormed() &&
     typeof frame.summary === "string" &&
     frame.summary.isWellFormed() &&
     !!frame.summary.trim() &&
     Array.from(frame.summary).length <= 200 &&
-    Number.isSafeInteger(frame.sentAt) &&
+    isSafeInteger(frame.sentAt, Number.MIN_SAFE_INTEGER) &&
     (frame.goalId === undefined || validId(frame.goalId))
   );
 }

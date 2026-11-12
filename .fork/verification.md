@@ -34,7 +34,9 @@ Evidence collected during implementation:
 - The first complete 0.84.4 run passed 81 tests with one version-specific skip. After adding SDK-state recovery and late-teardown regressions, final local verification passed **83 tests plus one version-specific skip on Pi 0.84.4**, and **84 tests with no skips on Pi 1.5.2** (Node 24.15.0, macOS).
 - Both local SDK runs also passed strict typechecking, formatting, the 47-path fork-record check and both real CLI smoke variants. Package dry-run confirms version `3.0.0-fork.1`, packaged changelog/records and absence of the deleted authorization modules; no archive was created.
 
-CI verification for this v3 change is pending its push. Earlier v2 runs below are historical evidence only.
+[CI run 43234604525](https://github.com/tomsanbear/pi-cross-session/actions/runs/43234604525) checks implementation commit `2fafc92002029e4f737f25bd89015542566747de`. On 2026-11-12, both Linux jobs (Node 22.19/Pi 0.84.4 and Node 24/Pi 1.5.2) passed the full suite, typecheck, formatting, fork inventory, CLI smoke and clean-tree checks. At the time this record was written, both macOS jobs remained queued awaiting runners; they had not failed or executed. Local macOS verification above passed both SDKs. Follow the linked run for subsequent hosted-macOS results; do not describe queued jobs as passed.
+
+This CI-status addition is documentation-only and does not change the verified implementation. Earlier v2 runs below are historical evidence only.
 
 ## Historical implementation: 2026-11-11, `f3c3e49`
 

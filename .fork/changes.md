@@ -4,7 +4,7 @@ Comparison baseline and maintenance rules: [FORK.md](../FORK.md). This is a cumu
 
 ## Current policy: live inbox, version 3 (2026-11-12)
 
-The operator explicitly chose **remove all collaboration restrictions**, retaining sender qualification, IPC authentication and basic resource limits. This supersedes the goal/guard/pause/quota policies in the historical sections below.
+Implemented in `2fafc92`. The operator explicitly chose **remove all collaboration restrictions**, retaining sender qualification, IPC authentication and basic resource limits. This supersedes the goal/guard/pause/quota policies in the historical sections below.
 
 - Removed cancellation/error reception latches, manual/automatic resume logic, success/source-dependent admission, pending-message cancellation drops and queue expiry. Admitted messages stay in FIFO order until SDK handoff is attempted or the session runtime ends; actual synchronous handoff failures remain explicit `injection_failed` receipts without blind replay; an open idle session needs no local user prompt to resume delivery.
 - Removed `peer_goal`, goal membership/task ownership journals, sensitive-tool interception, Mesh continuation permits, the pi-subagents-specific authorization adapter and child-runtime exclusions. Deleted `lib/peer-goal.ts`, `lib/mesh-continuation.ts` and the fork-added `lib/subagents.ts`. Every session that actually loads this extension registers; native host permissions still operate independently. Mesh adapters depending on the removed Cross continuation permits need their own authorization path; this fork does not bypass their separate policies.
@@ -84,13 +84,16 @@ Implemented in `cde5590` after `f3c3e49`; local checks and all four CI jobs pass
 
 ## Commit history
 
-| Commit    | Purpose                                                                                                 |
-| --------- | ------------------------------------------------------------------------------------------------------- |
-| `241b07d` | Delivery, authority, adapter, queue/recovery, module extraction, tests, packaging and initial CI        |
-| `b853a21` | Repository-wide source/test formatting, kept separate from behavior changes                             |
-| `69b561b` | Explicit unsafe CLI opt-out, effective-settings diagnostics and parsed-flag smoke coverage              |
-| `f3c3e49` | Deferred-prompt fixture synchronization, deterministic regression and current pinned CI actions         |
-| `cde5590` | Complete fork record, strict runtime boundaries, source/fixture hygiene and seven new regression checks |
-| `d4ca9f7` | Documentation-only recording of strict-cleanup CI evidence                                              |
+| Commit    | Purpose                                                                                                               |
+| --------- | --------------------------------------------------------------------------------------------------------------------- |
+| `241b07d` | Delivery, authority, adapter, queue/recovery, module extraction, tests, packaging and initial CI                      |
+| `b853a21` | Repository-wide source/test formatting, kept separate from behavior changes                                           |
+| `69b561b` | Explicit unsafe CLI opt-out, effective-settings diagnostics and parsed-flag smoke coverage                            |
+| `f3c3e49` | Deferred-prompt fixture synchronization, deterministic regression and current pinned CI actions                       |
+| `cde5590` | Complete fork record, strict runtime boundaries, source/fixture hygiene and seven new regression checks               |
+| `d4ca9f7` | Documentation-only recording of strict-cleanup CI evidence                                                            |
+| `2fafc92` | Version 3: continuous qualified inbox, removal of collaboration restrictions, replacement tests and migration records |
+
+A documentation-only follow-up records the v3 local/Linux success and the hosted-macOS runner queue in `verification.md`; no production source or test changed in that evidence update. Its commit skips duplicate hosted CI while the implementation run continues; formatting and fork-record checks are run locally.
 
 Git history is the exact patch record. This ledger explains decisions and coverage; it does not replace the diffs.

@@ -57,7 +57,9 @@ Local macOS verification with Node 24.15.0:
 
 The inventory checker covers all 46 changed paths. A temporary undocumented path was rejected in a negative-control probe, then removed; the clean inventory passed again. Package dry-run verified that `FORK.md`, `AGENTS.md`, all `.fork/` files, formatter configuration and new runtime helpers are included; no archive was created. `git diff --check` passed.
 
-CI evidence for this follow-up is pending its push. The older `f3c3e49` run above is historical, not evidence for this code.
+[CI run 43133611040](https://github.com/tomsanbear/pi-cross-session/actions/runs/43133611040) verified implementation commit `cde559066139a299ebe9bcd7ffd58b230b6dcaeb` on 2026-11-12 UTC (2026-11-11 local). All four matrix jobs passed: Linux/Node 22.19/Pi 0.84.4, Linux/Node 24/Pi 1.5.2, macOS/Node 24/Pi 0.84.4 and macOS/Node 24/Pi 1.5.2. The suite counts match the local table above. Each job also passed strict typechecking, formatting, fork-record coverage, both CLI smoke variants and the clean-tree check.
+
+This evidence was added in a documentation-only follow-up; production code and tests are unchanged from the verified implementation commit. The older `f3c3e49` run remains historical evidence for the earlier implementation.
 
 ## Coverage boundaries
 

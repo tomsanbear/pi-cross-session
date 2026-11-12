@@ -50,7 +50,7 @@ Introduced in `241b07d`, extended in `69b561b` and `f3c3e49`.
 
 ## Fork record and strict-cleanup follow-up
 
-Requested after `f3c3e49`; implementation and local verification complete. CI evidence is tracked in [verification.md](verification.md).
+Implemented in `cde5590` after `f3c3e49`; local checks and all four CI jobs passed. A documentation-only follow-up records that completed CI evidence in [verification.md](verification.md), without changing the verified source or tests.
 
 - Added root `FORK.md` as the concise entry point; `.fork/` holds this complete change ledger, the exhaustive path inventory and verification evidence.
 - Added `AGENTS.md` and a README pointer so future changes discover the maintenance contract without loading all detailed history by default.
@@ -65,11 +65,12 @@ Requested after `f3c3e49`; implementation and local verification complete. CI ev
 
 ## Commit history
 
-| Commit    | Purpose                                                                                          |
-| --------- | ------------------------------------------------------------------------------------------------ |
-| `241b07d` | Delivery, authority, adapter, queue/recovery, module extraction, tests, packaging and initial CI |
-| `b853a21` | Repository-wide source/test formatting, kept separate from behavior changes                      |
-| `69b561b` | Explicit unsafe CLI opt-out, effective-settings diagnostics and parsed-flag smoke coverage       |
-| `f3c3e49` | Deferred-prompt fixture synchronization, deterministic regression and current pinned CI actions  |
+| Commit    | Purpose                                                                                                 |
+| --------- | ------------------------------------------------------------------------------------------------------- |
+| `241b07d` | Delivery, authority, adapter, queue/recovery, module extraction, tests, packaging and initial CI        |
+| `b853a21` | Repository-wide source/test formatting, kept separate from behavior changes                             |
+| `69b561b` | Explicit unsafe CLI opt-out, effective-settings diagnostics and parsed-flag smoke coverage              |
+| `f3c3e49` | Deferred-prompt fixture synchronization, deterministic regression and current pinned CI actions         |
+| `cde5590` | Complete fork record, strict runtime boundaries, source/fixture hygiene and seven new regression checks |
 
 Git history is the exact patch record. This ledger explains decisions and coverage; it does not replace the diffs.
